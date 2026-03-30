@@ -27,6 +27,33 @@
             text-shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
             z-index: 10;
         }
+        #speedControl {
+            position: absolute;
+            top: 14px;
+            right: 16px;
+            z-index: 10;
+            display: none;
+            width: 260px;
+            padding: 10px 12px;
+            border-radius: 10px;
+            background: rgba(9, 19, 33, 0.72);
+            color: #f5fbff;
+            box-shadow: 0 8px 20px rgba(0, 0, 0, 0.3);
+            backdrop-filter: blur(3px);
+        }
+        #speedLabel {
+            display: block;
+            font-size: 15px;
+            margin-bottom: 8px;
+            font-weight: bold;
+        }
+        #speedSlider {
+            width: 100%;
+        }
+        #speedValue {
+            float: right;
+            opacity: 0.92;
+        }
         #tools, #levelList, #restartBtn { position: absolute; z-index: 10; display: none; }
         #tools { top: 50px; left: 10px; }
         #levelList {
@@ -67,6 +94,10 @@
 </head>
 <body>
 <div id="score">Score: 0</div>
+<div id="speedControl">
+    <label id="speedLabel" for="speedSlider">Spielgeschwindigkeit <span id="speedValue">4.00</span></label>
+    <input id="speedSlider" type="range" min="1.00" max="10.00" step="0.25" value="4.00">
+</div>
 <div id="tools">
     <button id="toolBlock">Block</button>
     <button id="toolJumpPad">Jump Pad</button>
@@ -89,6 +120,9 @@
     const canvas = document.getElementById("canvas");
     const ctx = canvas.getContext("2d");
     const scoreDiv = document.getElementById("score");
+    const speedControlDiv = document.getElementById("speedControl");
+    const speedSlider = document.getElementById("speedSlider");
+    const speedValue = document.getElementById("speedValue");
     const toolsDiv = document.getElementById("tools");
     const levelListDiv = document.getElementById("levelList");
     const restartBtn = document.getElementById("restartBtn");
@@ -114,7 +148,8 @@
         LEVELS: "gdLevels"
     };
     const COOKIE_KEYS = {
-        PLAY_SOURCE: "gdPlaySource"
+        PLAY_SOURCE: "gdPlaySource",
+        SPEED: "gdSpeed"
     };
     const PLAY_SOURCE_TYPE = {
         RANDOM: "random",
@@ -147,7 +182,10 @@
     const DEATH_RESTITUTION = 0.34;
     const MAX_CORPSE_HISTORY = 8;
     const CORPSE_TILE_SIZE = 8;
-    let scrollSpeed = 4;
+    const DEFAULT_SCROLL_SPEED = 4;
+    const MIN_SCROLL_SPEED = 1;
+    const MAX_SCROLL_SPEED = 10;
+    let scrollSpeed = DEFAULT_SCROLL_SPEED;
 
     let player;
     let cameraX = 0;
@@ -242,6 +280,35 @@
     function loadPlaySourceFromCookie() {
         const raw = getCookie(COOKIE_KEYS.PLAY_SOURCE);
         playSource = parsePlaySource(raw);
+    }
+
+    function applyScrollSpeed(value, persist = true) {
+        const parsed = Number(value);
+        const normalized = Number.isFinite(parsed) ? parsed : DEFAULT_SCROLL_SPEED;
+        const clamped = Math.min(MAX_SCROLL_SPEED, Math.max(MIN_SCROLL_SPEED, normalized));
+        scrollSpeed = clamped;
+        speedSlider.value = clamped.toFixed(2);
+        speedValue.textContent = clamped.toFixed(2);
+        if (persist) {
+            setCookie(COOKIE_KEYS.SPEED, clamped.toFixed(2));
+        }
+    }
+
+    function loadScrollSpeedFromCookie() {
+        const raw = getCookie(COOKIE_KEYS.SPEED);
+        const parsed = parseFloat(raw);
+        applyScrollSpeed(Number.isFinite(parsed) ? parsed : DEFAULT_SCROLL_SPEED, false);
+    }
+
+    function syncMenuSpeedControlVisibility() {
+        speedControlDiv.style.display = mode === MODE.MENU ? "block" : "none";
+    }
+
+    function setupSpeedControl() {
+        speedSlider.addEventListener("input", () => {
+            applyScrollSpeed(speedSlider.value, true);
+        });
+        applyScrollSpeed(scrollSpeed, false);
     }
 
     function deepClone(value) {
@@ -1936,6 +2003,8 @@
     }
 
     function draw() {
+        syncMenuSpeedControlVisibility();
+
         if (mode === MODE.GAME && deathState.active) {
             drawDeathAnimation();
             return;
@@ -2000,7 +2069,9 @@
 
     function init() {
         loadPlaySourceFromCookie();
+        loadScrollSpeedFromCookie();
         buildSpaceBackdropData();
+        setupSpeedControl();
         setupToolButtons();
         setupImportExportButtons();
         setupCanvasInput();
