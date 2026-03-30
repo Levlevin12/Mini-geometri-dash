@@ -1,0 +1,1881 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <title>Mini Geometry Dash - Alle Levels Laden</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background: radial-gradient(circle at 20% 10%, #3f5f9f, #172440 70%);
+            font-family: "Trebuchet MS", Arial, sans-serif;
+        }
+        canvas {
+            display: block;
+            margin: 12px auto;
+            background: transparent;
+            border-radius: 16px;
+            box-shadow: 0 24px 45px rgba(0, 0, 0, 0.45), inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+        }
+        #score {
+            position: absolute;
+            top: 14px;
+            left: 16px;
+            font-size: 20px;
+            color: #f5fbff;
+            font-weight: bold;
+            text-shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
+            z-index: 10;
+        }
+        #tools, #levelList, #restartBtn { position: absolute; z-index: 10; display: none; }
+        #tools { top: 50px; left: 10px; }
+        #levelList {
+            top: 50px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 400px;
+            background: rgba(255, 255, 255, 0.94);
+            padding: 10px;
+            border-radius: 8px;
+            max-height: 300px;
+            overflow-y: auto;
+            box-shadow: 0 12px 25px rgba(0, 0, 0, 0.25);
+        }
+        #levelList div { padding: 5px; margin: 3px 0; background: #ddd; cursor: pointer; border-radius: 4px; }
+        #restartBtn {
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            padding: 10px 20px;
+            font-size: 20px;
+            cursor: pointer;
+            background: red;
+            color: white;
+            border: none;
+            border-radius: 8px;
+        }
+        button {
+            margin-right: 5px;
+            margin-bottom: 5px;
+            padding: 5px 10px;
+            cursor: pointer;
+            border: 0;
+            border-radius: 6px;
+            box-shadow: 0 3px 8px rgba(0, 0, 0, 0.25);
+        }
+    </style>
+</head>
+<body>
+<div id="score">Score: 0</div>
+<div id="tools">
+    <button id="toolBlock">Block</button>
+    <button id="toolJumpPad">Jump Pad</button>
+    <button id="toolSpike">Spike</button>
+    <button id="toolPortal">Portal</button>
+    <button id="toolGoal">Ziel</button>
+    <button id="toolErase">Loeschen</button>
+    <button id="saveLevel">Level speichern</button>
+    <button id="loadLevel">Level laden</button>
+    <button id="exportFile">Levels exportieren</button>
+    <input type="file" id="importFile" accept="application/json">
+    <button id="editLevelBtn">Level bearbeiten</button>
+    <button id="deleteLevelBtn">Level löschen</button>
+</div>
+<div id="levelList"></div>
+<button id="restartBtn">Restart</button>
+<canvas id="canvas" width="1200" height="800"></canvas>
+
+<script>
+    const canvas = document.getElementById("canvas");
+    const ctx = canvas.getContext("2d");
+    const scoreDiv = document.getElementById("score");
+    const toolsDiv = document.getElementById("tools");
+    const levelListDiv = document.getElementById("levelList");
+    const restartBtn = document.getElementById("restartBtn");
+    const importFileInput = document.getElementById("importFile");
+
+    const MODE = {
+        MENU: "menu",
+        GAME: "game",
+        MAKER: "maker"
+    };
+
+    const OBJECT_TYPE = {
+        BLOCK: "block",
+        JUMP_PAD: "jumppad",
+        SPIKE: "spike",
+        PORTAL: "portal",
+        GOAL: "goal",
+        ERASE: "erase"
+    };
+
+    const STORAGE_KEYS = {
+        OLD_LEVEL: "gdLevelMaker",
+        LEVELS: "gdLevels"
+    };
+
+    const gridSize = 60;
+    const spikeWidth = gridSize * 0.66;
+    const groundY = 360;
+    const PLAYER_SIZE = 40;
+    const makerWidth = 50000;
+    const BLOCK_DEPTH = 12;
+    const PLAYER_DEPTH = 10;
+    const NORMAL_GRAVITY = 8;
+    const LOW_GRAVITY = 0.6;
+    const LOW_GRAVITY_DURATION = 760;
+    const PORTAL_ANIMATION_DURATION = 260;
+    const NORMAL_JUMP_HEIGHT = 130;
+    const NORMAL_JUMP_DURATION = 75;
+    const LOW_GRAVITY_JUMP_HEIGHT = 255;
+    const LOW_GRAVITY_JUMP_DURATION = 150;
+    const DEATH_ROTATION_FRAMES = 28;
+    const DEATH_TILE_SIZE = 48;
+    const DEATH_GRAVITY = 0.72;
+    const DEATH_AIR_DRAG = 0.998;
+    const DEATH_SPIN_DRAG = 0.996;
+    const DEATH_RESTITUTION = 0.34;
+    const MAX_CORPSE_HISTORY = 8;
+    const CORPSE_TILE_SIZE = 8;
+    let scrollSpeed = 4;
+
+    let player;
+    let cameraX = 0;
+    let level = [];
+    let score = 0;
+    let message = "";
+    let mode = MODE.MENU;
+    let currentLevelIndex = 0;
+    let levels = [];
+    let makerLevel = [];
+    let makerCameraX = 0;
+    let currentTool = OBJECT_TYPE.BLOCK;
+
+    let jumpStartY = 0;
+    let jumpProgress = 0;
+    let jumpDuration = 75;
+    let jumpHeight = 130;
+    let jumpingKey = false;
+    let forceJump = false;
+    let lowGravityFrames = 0;
+    let portalAnimationFrames = 0;
+    let spaceStars = [];
+    let deepSpaceStars = [];
+    let spaceDustClouds = [];
+    let spacePlanets = [];
+    let deathState = {
+        active: false,
+        phase: "idle",
+        frame: 0,
+        rotation: 0,
+        elapsed: 0,
+        snapshot: null,
+        bodies: []
+    };
+    let lastDeathWorldPoint = { x: 0, y: groundY - PLAYER_SIZE / 2 };
+    let corpseHistory = [];
+
+    function safeParseJSON(rawValue, fallback) {
+        try {
+            return JSON.parse(rawValue);
+        } catch (_error) {
+            return fallback;
+        }
+    }
+
+    function deepClone(value) {
+        return JSON.parse(JSON.stringify(value));
+    }
+
+    function randomRange(min, max) {
+        return min + Math.random() * (max - min);
+    }
+
+    function wrapValue(value, max) {
+        const wrapped = value % max;
+        return wrapped < 0 ? wrapped + max : wrapped;
+    }
+
+    function buildSpaceBackdropData() {
+        spaceStars = [];
+        deepSpaceStars = [];
+        spaceDustClouds = [];
+        spacePlanets = [];
+
+        for (let i = 0; i < 360; i++) {
+            spaceStars.push({
+                x: Math.random() * canvas.width,
+                y: Math.random() * canvas.height,
+                size: randomRange(0.6, 2.6),
+                twinklePhase: randomRange(0, Math.PI * 2),
+                twinkleSpeed: randomRange(0.6, 2.8),
+                drift: randomRange(0.08, 0.62),
+                hue: randomRange(185, 240)
+            });
+        }
+
+        for (let i = 0; i < 180; i++) {
+            deepSpaceStars.push({
+                x: Math.random() * canvas.width,
+                y: Math.random() * canvas.height,
+                size: randomRange(0.4, 1.5),
+                twinklePhase: randomRange(0, Math.PI * 2),
+                twinkleSpeed: randomRange(0.3, 1.2),
+                drift: randomRange(0.03, 0.2)
+            });
+        }
+
+        for (let i = 0; i < 8; i++) {
+            spaceDustClouds.push({
+                x: Math.random() * canvas.width,
+                y: randomRange(20, canvas.height - 50),
+                radius: randomRange(120, 260),
+                hue: randomRange(240, 320),
+                alpha: randomRange(0.08, 0.22),
+                drift: randomRange(0.05, 0.22)
+            });
+        }
+
+        for (let i = 0; i < 4; i++) {
+            spacePlanets.push({
+                x: randomRange(90, canvas.width - 80),
+                y: randomRange(35, canvas.height * 0.5),
+                radius: randomRange(24, 68),
+                hue: randomRange(180, 290),
+                sat: randomRange(45, 80),
+                light: randomRange(46, 63),
+                ring: Math.random() < 0.75,
+                ringTilt: randomRange(-0.6, 0.6),
+                ringHueShift: randomRange(14, 40),
+                drift: randomRange(0.04, 0.16)
+            });
+        }
+    }
+
+    function resetDeathAnimation() {
+        deathState.active = false;
+        deathState.phase = "idle";
+        deathState.frame = 0;
+        deathState.rotation = 0;
+        deathState.elapsed = 0;
+        deathState.snapshot = null;
+        deathState.bodies = [];
+    }
+
+    function createDeathSnapshot() {
+        const snapshot = document.createElement("canvas");
+        snapshot.width = canvas.width;
+        snapshot.height = canvas.height;
+        const snapshotCtx = snapshot.getContext("2d");
+        snapshotCtx.drawImage(canvas, 0, 0);
+        return snapshot;
+    }
+
+    function createPlayerCorpseSnapshot() {
+        const size = 96;
+        const tile = document.createElement("canvas");
+        tile.width = size;
+        tile.height = size;
+        const pctx = tile.getContext("2d");
+        const cubeSize = PLAYER_SIZE;
+        const depth = PLAYER_DEPTH;
+        const x = (size - cubeSize) / 2 - depth * 0.3;
+        const y = (size - cubeSize) / 2 + depth * 0.1;
+
+        pctx.fillStyle = "#89d3ff";
+        pctx.beginPath();
+        pctx.moveTo(x, y);
+        pctx.lineTo(x + depth, y - depth);
+        pctx.lineTo(x + cubeSize + depth, y - depth);
+        pctx.lineTo(x + cubeSize, y);
+        pctx.closePath();
+        pctx.fill();
+
+        pctx.fillStyle = "#1e69b9";
+        pctx.beginPath();
+        pctx.moveTo(x + cubeSize, y);
+        pctx.lineTo(x + cubeSize + depth, y - depth);
+        pctx.lineTo(x + cubeSize + depth, y + cubeSize - depth);
+        pctx.lineTo(x + cubeSize, y + cubeSize);
+        pctx.closePath();
+        pctx.fill();
+
+        pctx.fillStyle = "#3ea2ff";
+        pctx.fillRect(x, y, cubeSize, cubeSize);
+
+        pctx.strokeStyle = "rgba(0, 0, 0, 0.35)";
+        pctx.lineWidth = 1.2;
+        pctx.strokeRect(x + 0.5, y + 0.5, cubeSize - 1, cubeSize - 1);
+
+        pctx.fillStyle = "#03203d";
+        pctx.fillRect(x + cubeSize * 0.25 - 3, y + cubeSize * 0.25 - 3, 6, 6);
+        pctx.fillRect(x + cubeSize * 0.75 - 3, y + cubeSize * 0.25 - 3, 6, 6);
+        pctx.fillRect(x + cubeSize * 0.25, y + cubeSize * 0.75 - 1, cubeSize * 0.5, 2);
+
+        return tile;
+    }
+
+    function buildPlayerCorpseBodies(snapshot, worldX, worldY) {
+        const bodies = [];
+        const centerX = snapshot.width / 2;
+        const centerY = snapshot.height / 2;
+        const readCtx = snapshot.getContext("2d");
+
+        for (let sy = 0; sy < snapshot.height; sy += CORPSE_TILE_SIZE) {
+            for (let sx = 0; sx < snapshot.width; sx += CORPSE_TILE_SIZE) {
+                const sw = Math.min(CORPSE_TILE_SIZE, snapshot.width - sx);
+                const sh = Math.min(CORPSE_TILE_SIZE, snapshot.height - sy);
+                if (sw < 2 || sh < 2) {
+                    continue;
+                }
+
+                const pixels = readCtx.getImageData(sx, sy, sw, sh).data;
+                let alphaSum = 0;
+                for (let i = 3; i < pixels.length; i += 4) {
+                    alphaSum += pixels[i];
+                }
+                if (alphaSum < sw * sh * 22) {
+                    continue;
+                }
+
+                const localX = sx + sw / 2 - centerX;
+                const localY = sy + sh / 2 - centerY;
+                bodies.push({
+                    worldX: worldX + localX,
+                    worldY: worldY + localY,
+                    x: worldX + localX,
+                    y: worldY + localY,
+                    vx: 0,
+                    vy: 0,
+                    angle: (Math.random() - 0.5) * 0.45,
+                    angularVelocity: 0,
+                    sx: sx,
+                    sy: sy,
+                    sw: sw,
+                    sh: sh,
+                    radius: Math.hypot(sw, sh) * 0.42,
+                    mass: Math.max(0.45, (sw * sh) / 240),
+                    offscreen: false
+                });
+            }
+        }
+
+        return bodies;
+    }
+
+    function buildDeathBodiesFromSnapshot(snapshot, rotation = Math.PI / 2, burstScale = 1) {
+        const bodies = [];
+        const centerX = canvas.width / 2;
+        const centerY = canvas.height / 2;
+        const cosR = Math.cos(rotation);
+        const sinR = Math.sin(rotation);
+
+        for (let sy = 0; sy < snapshot.height; sy += DEATH_TILE_SIZE) {
+            for (let sx = 0; sx < snapshot.width; sx += DEATH_TILE_SIZE) {
+                const sw = Math.min(DEATH_TILE_SIZE, snapshot.width - sx);
+                const sh = Math.min(DEATH_TILE_SIZE, snapshot.height - sy);
+                if (sw < 6 || sh < 6) {
+                    continue;
+                }
+
+                const sourceX = sx + sw / 2 - centerX;
+                const sourceY = sy + sh / 2 - centerY;
+                const rotatedX = centerX + sourceX * cosR - sourceY * sinR;
+                const rotatedY = centerY + sourceX * sinR + sourceY * cosR;
+                const explosionDirX = rotatedX - centerX;
+                const explosionDirY = rotatedY - centerY;
+                const explosionLength = Math.hypot(explosionDirX, explosionDirY) || 1;
+                const dirX = explosionDirX / explosionLength;
+                const dirY = explosionDirY / explosionLength;
+                const burst = (0.4 + Math.random() * 1.5) * burstScale;
+
+                bodies.push({
+                    x: rotatedX,
+                    y: rotatedY,
+                    vx: dirX * burst + (Math.random() - 0.5) * 1.5,
+                    vy: dirY * burst + Math.random() * 1.3 - 1.2,
+                    angle: rotation,
+                    angularVelocity: (Math.random() - 0.5) * 0.13,
+                    sx: sx,
+                    sy: sy,
+                    sw: sw,
+                    sh: sh,
+                    radius: Math.hypot(sw, sh) * 0.42,
+                    mass: Math.max(0.65, (sw * sh) / 1300),
+                    offscreen: false
+                });
+            }
+        }
+
+        return bodies;
+    }
+
+    function beginDeathPhysicsPhase() {
+        if (!deathState.snapshot) {
+            return;
+        }
+        deathState.phase = "fall";
+        deathState.frame = 0;
+        deathState.rotation = Math.PI / 2;
+        deathState.elapsed = 0;
+        deathState.bodies = buildDeathBodiesFromSnapshot(deathState.snapshot, Math.PI / 2, 1);
+    }
+
+    function startDeathAnimation() {
+        if (deathState.active || mode !== MODE.GAME) {
+            return;
+        }
+
+        deathState.active = true;
+        deathState.phase = "rotate";
+        deathState.frame = 0;
+        deathState.rotation = 0;
+        deathState.elapsed = 0;
+        deathState.snapshot = createDeathSnapshot();
+        deathState.bodies = [];
+    }
+
+    function resolveDeathBodyCollision(bodyA, bodyB) {
+        const dx = bodyB.x - bodyA.x;
+        const dy = bodyB.y - bodyA.y;
+        const minDistance = bodyA.radius + bodyB.radius;
+        const distanceSq = dx * dx + dy * dy;
+
+        if (distanceSq <= 0 || distanceSq >= minDistance * minDistance) {
+            return;
+        }
+
+        const distance = Math.sqrt(distanceSq);
+        const normalX = dx / distance;
+        const normalY = dy / distance;
+        const overlap = minDistance - distance;
+        const invMassA = 1 / bodyA.mass;
+        const invMassB = 1 / bodyB.mass;
+        const invMassTotal = invMassA + invMassB;
+
+        bodyA.x -= normalX * overlap * (invMassA / invMassTotal);
+        bodyA.y -= normalY * overlap * (invMassA / invMassTotal);
+        bodyB.x += normalX * overlap * (invMassB / invMassTotal);
+        bodyB.y += normalY * overlap * (invMassB / invMassTotal);
+
+        const relVelX = bodyB.vx - bodyA.vx;
+        const relVelY = bodyB.vy - bodyA.vy;
+        const velocityAlongNormal = relVelX * normalX + relVelY * normalY;
+        if (velocityAlongNormal > 0) {
+            return;
+        }
+
+        const impulse = -(1 + DEATH_RESTITUTION) * velocityAlongNormal / invMassTotal;
+        const impulseX = impulse * normalX;
+        const impulseY = impulse * normalY;
+        bodyA.vx -= impulseX * invMassA;
+        bodyA.vy -= impulseY * invMassA;
+        bodyB.vx += impulseX * invMassB;
+        bodyB.vy += impulseY * invMassB;
+
+        const spinTransfer = Math.min(0.18, Math.abs(velocityAlongNormal) * 0.02);
+        bodyA.angularVelocity -= spinTransfer * (Math.random() < 0.5 ? -1 : 1);
+        bodyB.angularVelocity += spinTransfer * (Math.random() < 0.5 ? -1 : 1);
+    }
+
+    function updateDeathBodies(bodies, mode = "void") {
+        for (const body of bodies) {
+            if (body.offscreen) {
+                continue;
+            }
+
+            body.vy += DEATH_GRAVITY;
+            body.x += body.vx;
+            body.y += body.vy;
+            body.angle += body.angularVelocity;
+
+            body.vx *= DEATH_AIR_DRAG;
+            body.vy *= DEATH_AIR_DRAG;
+            body.angularVelocity *= DEATH_SPIN_DRAG;
+
+            const wallPadding = 10;
+            if (body.x - body.radius < -wallPadding) {
+                body.x = -wallPadding + body.radius;
+                body.vx = Math.abs(body.vx) * 0.52;
+            } else if (body.x + body.radius > canvas.width + wallPadding) {
+                body.x = canvas.width + wallPadding - body.radius;
+                body.vx = -Math.abs(body.vx) * 0.52;
+            }
+
+            if (body.y - body.radius < -wallPadding) {
+                body.y = -wallPadding + body.radius;
+                body.vy = Math.abs(body.vy) * 0.45;
+            }
+
+            if (mode === "void") {
+                if (body.y - body.radius > canvas.height + 260) {
+                    body.offscreen = true;
+                }
+            } else {
+                const floorY = canvas.height - body.sh / 2;
+                if (body.y > floorY) {
+                    body.y = floorY;
+                    body.vy = -Math.abs(body.vy) * DEATH_RESTITUTION;
+                    body.vx *= 0.94;
+                    if (Math.abs(body.vy) < 0.32) {
+                        body.vy = 0;
+                    }
+                    if (Math.abs(body.vx) < 0.03) {
+                        body.vx = 0;
+                    }
+                }
+            }
+        }
+
+        for (let iteration = 0; iteration < 2; iteration++) {
+            for (let i = 0; i < bodies.length; i++) {
+                const bodyA = bodies[i];
+                if (bodyA.offscreen) {
+                    continue;
+                }
+                for (let j = i + 1; j < bodies.length; j++) {
+                    const bodyB = bodies[j];
+                    if (bodyB.offscreen) {
+                        continue;
+                    }
+                    const maxDist = bodyA.radius + bodyB.radius;
+                    if (Math.abs(bodyA.x - bodyB.x) > maxDist || Math.abs(bodyA.y - bodyB.y) > maxDist) {
+                        continue;
+                    }
+                    resolveDeathBodyCollision(bodyA, bodyB);
+                }
+            }
+        }
+    }
+
+    function updateDeathAnimation() {
+        if (!deathState.active) {
+            return;
+        }
+
+        if (deathState.phase === "rotate") {
+            deathState.frame++;
+            const t = Math.min(1, deathState.frame / DEATH_ROTATION_FRAMES);
+            const eased = 1 - (1 - t) * (1 - t);
+            deathState.rotation = eased * (Math.PI / 2);
+            if (t >= 1) {
+                beginDeathPhysicsPhase();
+            }
+            return;
+        }
+
+        if (deathState.phase === "fall") {
+            deathState.elapsed++;
+            updateDeathBodies(deathState.bodies, "void");
+        }
+    }
+
+    function archiveCurrentDeathAsCorpse() {
+        if (!deathState.active) {
+            return;
+        }
+
+        const corpseSnapshot = createPlayerCorpseSnapshot();
+        const archivedBodies = buildPlayerCorpseBodies(
+            corpseSnapshot,
+            lastDeathWorldPoint.x,
+            lastDeathWorldPoint.y
+        );
+        if (archivedBodies.length === 0) {
+            return;
+        }
+
+        corpseHistory.push({
+            snapshot: corpseSnapshot,
+            bodies: archivedBodies
+        });
+        if (corpseHistory.length > MAX_CORPSE_HISTORY) {
+            corpseHistory.shift();
+        }
+    }
+
+    function updateCorpseHistory() {
+        // Archived corpses stay fixed at their death location in world space.
+    }
+
+    function hideOverlays() {
+        toolsDiv.style.display = "none";
+        levelListDiv.style.display = "none";
+        restartBtn.style.display = "none";
+    }
+
+    function getStoredNamedLevels() {
+        const stored = localStorage.getItem(STORAGE_KEYS.LEVELS);
+        if (!stored) {
+            return [];
+        }
+        const parsed = safeParseJSON(stored, []);
+        return Array.isArray(parsed) ? parsed : [];
+    }
+
+    function setStoredNamedLevels(namedLevels) {
+        localStorage.setItem(STORAGE_KEYS.LEVELS, JSON.stringify(namedLevels));
+    }
+
+    function loadAllStoredLevels() {
+        const savedLevels = [];
+
+        const oldLevelRaw = localStorage.getItem(STORAGE_KEYS.OLD_LEVEL);
+        if (oldLevelRaw) {
+            const parsedOldLevel = safeParseJSON(oldLevelRaw, []);
+            savedLevels.push({ name: "Altes Level", data: parsedOldLevel });
+        }
+
+        return savedLevels.concat(getStoredNamedLevels());
+    }
+
+    function getMenuButtons() {
+        const cx = canvas.width / 2;
+        return [
+            { text: "Prev", x: cx - 180, y: 180, w: 120, h: 50, action: "prev" },
+            { text: "Next", x: cx + 60, y: 180, w: 120, h: 50, action: "next" },
+            { text: "Play", x: cx - 100, y: 260, w: 200, h: 60, action: "play" },
+            { text: "Map Maker", x: cx - 100, y: 340, w: 200, h: 60, action: "maker" },
+            { text: "My Levels", x: canvas.width - 700, y: canvas.height - 370, w: 200, h: 60, action: "playmaker" }
+        ];
+    }
+
+    function objectInView(obj, offsetX) {
+        const relX = obj.x - offsetX;
+        return relX > -100 && relX < canvas.width + 100;
+    }
+
+    function getVisibleObjects(objects, offsetX) {
+        return objects.filter((obj) => objectInView(obj, offsetX));
+    }
+
+    function getPlayerBounds() {
+        return {
+            top: player.y,
+            bottom: player.y + player.size,
+            left: player.x,
+            right: player.x + player.size
+        };
+    }
+
+    function loseGame() {
+        if (!player || !player.alive) {
+            return;
+        }
+        lastDeathWorldPoint = {
+            x: cameraX + player.x + player.size / 2,
+            y: player.y + player.size / 2
+        };
+        player.alive = false;
+        message = "You Lose!";
+        startDeathAnimation();
+        restartBtn.style.display = "block";
+    }
+
+    function removeMakerObjectAt(x, y) {
+        const index = makerLevel.findIndex((obj) => obj.x === x && obj.y === y);
+        if (index !== -1) {
+            makerLevel.splice(index, 1);
+        }
+    }
+
+    function placeMakerObject(x, y, type) {
+        removeMakerObjectAt(x, y);
+        makerLevel.push({ x: x, y: y, type: type });
+    }
+
+    function saveCurrentMakerLevel() {
+        const levelName = prompt("Level Name eingeben:", "Mein Level");
+        if (!levelName) {
+            return;
+        }
+        const saved = getStoredNamedLevels();
+        saved.push({ name: levelName, data: makerLevel });
+        setStoredNamedLevels(saved);
+        alert("Level gespeichert!");
+    }
+
+    function showMakerLoadList() {
+        const savedLevels = loadAllStoredLevels();
+        if (savedLevels.length === 0) {
+            alert("Keine Levels gefunden!");
+            return;
+        }
+
+        levelListDiv.innerHTML = "<h3>Levels zum Laden</h3>";
+        savedLevels.forEach((lvl) => {
+            const div = document.createElement("div");
+            div.textContent = lvl.name || "Level";
+            div.onclick = () => {
+                makerLevel = deepClone(lvl.data);
+                alert("Level '" + (lvl.name || "Level") + "' geladen!");
+                levelListDiv.style.display = "none";
+            };
+            levelListDiv.appendChild(div);
+        });
+        levelListDiv.style.display = "block";
+    }
+
+    function showPlayableLevelList() {
+        const savedLevels = loadAllStoredLevels();
+        levelListDiv.innerHTML = "<h3>Meine Levels</h3>";
+
+        if (savedLevels.length === 0) {
+            levelListDiv.innerHTML += "<p>Keine Levels gespeichert</p>";
+        } else {
+            savedLevels.forEach((lvl, index) => {
+                const div = document.createElement("div");
+                div.textContent = lvl.name || "Level " + (index + 1);
+                div.onclick = () => {
+                    startGame(lvl.data);
+                    levelListDiv.style.display = "none";
+                };
+                levelListDiv.appendChild(div);
+            });
+        }
+
+        levelListDiv.style.display = "block";
+    }
+
+    function generateLevel() {
+        const length = 8000;
+        let x = 0;
+        const generatedLevel = [];
+
+        while (x < length) {
+            const rand = Math.random();
+
+            if (rand < 0.25 && x > 800) {
+                const spikeCount = 3;
+                for (let i = 0; i < spikeCount; i++) {
+                    generatedLevel.push({ x: x + i * 40, y: groundY, type: OBJECT_TYPE.SPIKE });
+                }
+                x += spikeCount * 40 + gridSize * 1.5;
+                continue;
+            }
+
+            if (rand < 0.15) {
+                generatedLevel.push({ x: x, y: groundY, type: OBJECT_TYPE.JUMP_PAD });
+                x += gridSize * 2;
+                continue;
+            }
+
+            if (rand < 0.23 && x > 1200) {
+                generatedLevel.push({ x: x, y: groundY - gridSize, type: OBJECT_TYPE.PORTAL });
+                x += gridSize * 2;
+                continue;
+            }
+
+            const blockCount = Math.floor(Math.random() * 4) + 2;
+            for (let i = 0; i < blockCount; i++) {
+                const yOffset = Math.random() < 0.2 ? -gridSize : 0;
+                generatedLevel.push({ x: x, y: groundY + yOffset, type: OBJECT_TYPE.BLOCK });
+                x += gridSize;
+            }
+        }
+
+        generatedLevel.push({ x: 8000, y: groundY, type: OBJECT_TYPE.GOAL });
+        return generatedLevel;
+    }
+
+    function startGame(lvl) {
+        if (deathState.active) {
+            archiveCurrentDeathAsCorpse();
+        }
+        resetDeathAnimation();
+        player = { x: 120, y: groundY - PLAYER_SIZE, size: PLAYER_SIZE, jumping: false, alive: true, rotation: 0 };
+        cameraX = 0;
+        score = 0;
+        message = "";
+        lowGravityFrames = 0;
+        portalAnimationFrames = 0;
+        level = deepClone(lvl);
+        mode = MODE.GAME;
+        hideOverlays();
+    }
+
+    function handleMenu(action) {
+        if (action === "prev" && currentLevelIndex > 0) {
+            currentLevelIndex--;
+            return;
+        }
+        if (action === "next" && currentLevelIndex < levels.length - 1) {
+            currentLevelIndex++;
+            return;
+        }
+        if (action === "play") {
+            startGame(levels[currentLevelIndex]);
+            return;
+        }
+        if (action === "maker") {
+            mode = MODE.MAKER;
+            makerCameraX = 0;
+            toolsDiv.style.display = "block";
+            levelListDiv.style.display = "none";
+            restartBtn.style.display = "none";
+            return;
+        }
+        if (action === "playmaker") {
+            showPlayableLevelList();
+        }
+    }
+
+    function setupToolButtons() {
+        const toolButtons = {
+            toolBlock: OBJECT_TYPE.BLOCK,
+            toolJumpPad: OBJECT_TYPE.JUMP_PAD,
+            toolSpike: OBJECT_TYPE.SPIKE,
+            toolPortal: OBJECT_TYPE.PORTAL,
+            toolGoal: OBJECT_TYPE.GOAL,
+            toolErase: OBJECT_TYPE.ERASE
+        };
+
+        Object.entries(toolButtons).forEach(([buttonId, tool]) => {
+            document.getElementById(buttonId).onclick = () => {
+                currentTool = tool;
+            };
+        });
+
+        document.getElementById("saveLevel").onclick = saveCurrentMakerLevel;
+        document.getElementById("loadLevel").onclick = showMakerLoadList;
+    }
+
+    function setupImportExportButtons() {
+        document.getElementById("exportFile").onclick = () => {
+            const data = localStorage.getItem(STORAGE_KEYS.LEVELS);
+            if (!data) {
+                alert("Keine Levels gespeichert!");
+                return;
+            }
+
+            const blob = new Blob([data], { type: "application/json" });
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement("a");
+            link.href = url;
+            link.download = "gd-levels.json";
+            link.click();
+            URL.revokeObjectURL(url);
+        };
+
+        importFileInput.addEventListener("change", (event) => {
+            const file = event.target.files[0];
+            if (!file) {
+                return;
+            }
+
+            const reader = new FileReader();
+            reader.onload = () => {
+                const imported = safeParseJSON(reader.result, null);
+                if (!Array.isArray(imported)) {
+                    alert("Fehler: ungueltige Datei");
+                    return;
+                }
+
+                const existing = getStoredNamedLevels();
+                const merged = existing.concat(imported);
+                setStoredNamedLevels(merged);
+                alert("Levels importiert!");
+            };
+            reader.readAsText(file);
+        });
+    }
+
+    function setupCanvasInput() {
+        canvas.addEventListener("click", (event) => {
+            const rect = canvas.getBoundingClientRect();
+            const mx = event.clientX - rect.left;
+            const my = event.clientY - rect.top;
+
+            if (mode === MODE.MENU) {
+                getMenuButtons().forEach((btn) => {
+                    const insideX = mx > btn.x && mx < btn.x + btn.w;
+                    const insideY = my > btn.y && my < btn.y + btn.h;
+                    if (insideX && insideY) {
+                        handleMenu(btn.action);
+                    }
+                });
+            }
+
+            if (mode === MODE.MAKER) {
+                const x = Math.floor((mx + makerCameraX) / gridSize) * gridSize;
+                const y = Math.floor(my / gridSize) * gridSize;
+                if (currentTool === OBJECT_TYPE.ERASE) {
+                    removeMakerObjectAt(x, y);
+                } else {
+                    placeMakerObject(x, y, currentTool);
+                }
+            }
+        });
+    }
+
+    function setupKeyboardInput() {
+        document.addEventListener("keydown", (event) => {
+            if (event.code === "Escape") {
+                mode = MODE.MENU;
+                resetDeathAnimation();
+                hideOverlays();
+                return;
+            }
+
+            if (mode === MODE.GAME && player && player.alive) {
+                if (event.code === "Space" || event.code === "KeyW") {
+                    jumpingKey = true;
+                }
+            }
+
+            if (mode === MODE.MAKER) {
+                if (event.code === "ArrowLeft") {
+                    makerCameraX -= gridSize;
+                    if (makerCameraX < 0) {
+                        makerCameraX = 0;
+                    }
+                }
+                if (event.code === "ArrowRight") {
+                    makerCameraX += gridSize;
+                    const maxCameraX = makerWidth - canvas.width;
+                    if (makerCameraX > maxCameraX) {
+                        makerCameraX = maxCameraX;
+                    }
+                }
+            }
+        });
+
+        document.addEventListener("keyup", (event) => {
+            if (event.code === "Space" || event.code === "KeyW") {
+                jumpingKey = false;
+            }
+        });
+    }
+
+    function applyBlockCollision(obj, relX, bounds) {
+        const blockTop = obj.y;
+        const blockBottom = obj.y + gridSize;
+        const blockLeft = relX;
+        const blockRight = relX + gridSize;
+
+        const landsOnTop = (
+            bounds.bottom > blockTop &&
+            bounds.top < blockTop &&
+            bounds.right > blockLeft &&
+            bounds.left < blockRight
+        );
+
+        if (landsOnTop) {
+            player.y = blockTop - player.size;
+            player.jumping = false;
+            player.rotation = 0;
+            forceJump = false;
+            return true;
+        }
+
+        const hitsSide = (
+            bounds.right > blockLeft &&
+            bounds.left < blockRight &&
+            bounds.bottom > blockTop &&
+            bounds.top < blockBottom
+        );
+
+        if (hitsSide) {
+            loseGame();
+        }
+
+        return false;
+    }
+
+    function applyJumpPadCollision(obj, relX, bounds) {
+        const padTop = obj.y;
+        const padBottom = obj.y + 12;
+        const padLeft = relX;
+        const padRight = relX + gridSize;
+
+        const touchesPad = (
+            bounds.bottom > padTop &&
+            bounds.top < padBottom &&
+            bounds.right > padLeft &&
+            bounds.left < padRight
+        );
+
+        if (!touchesPad) {
+            return false;
+        }
+
+        player.y = padTop - player.size;
+        player.jumping = true;
+        jumpStartY = player.y;
+        jumpProgress = 0;
+        jumpDuration = lowGravityFrames > 0 ? 165 : 75;
+        jumpHeight = lowGravityFrames > 0 ? 340 : 250;
+        forceJump = true;
+        return true;
+    }
+
+    function activatePortalEffect() {
+        lowGravityFrames = Math.max(lowGravityFrames, LOW_GRAVITY_DURATION);
+        portalAnimationFrames = PORTAL_ANIMATION_DURATION;
+    }
+
+    function applyPortalCollision(obj, relX, bounds) {
+        const portalTop = obj.y;
+        const portalBottom = obj.y + gridSize;
+        const portalLeft = relX;
+        const portalRight = relX + gridSize;
+        const overlapsPortal = (
+            bounds.bottom > portalTop &&
+            bounds.top < portalBottom &&
+            bounds.right > portalLeft &&
+            bounds.left < portalRight
+        );
+
+        if (!overlapsPortal) {
+            return false;
+        }
+
+        const cooldownFrames = obj.portalCooldown || 0;
+        if (cooldownFrames <= 0) {
+            activatePortalEffect();
+            obj.portalCooldown = 90;
+        }
+        return true;
+    }
+
+    function hitsSpike(obj, relX, bounds) {
+        return (
+            bounds.right > relX + spikeWidth * 0.25 &&
+            bounds.left < relX + spikeWidth * 0.75 &&
+            bounds.bottom > obj.y + 5 &&
+            bounds.top < obj.y + 35
+        );
+    }
+
+    function reachedGoal(_obj, relX, bounds) {
+        return bounds.right > relX && bounds.left < relX + gridSize;
+    }
+
+    function update() {
+        if (mode !== MODE.GAME) {
+            return;
+        }
+
+        updateCorpseHistory();
+
+        if (deathState.active) {
+            updateDeathAnimation();
+            return;
+        }
+
+        if (!player || !player.alive) {
+            return;
+        }
+
+        if (lowGravityFrames > 0) {
+            lowGravityFrames--;
+        }
+        if (portalAnimationFrames > 0) {
+            portalAnimationFrames--;
+        }
+
+        cameraX += scrollSpeed;
+        let onGround = false;
+        const visibleObjects = getVisibleObjects(level, cameraX);
+
+        for (const obj of visibleObjects) {
+            const relX = obj.x - cameraX;
+            const bounds = getPlayerBounds();
+            if (obj.type === OBJECT_TYPE.PORTAL && obj.portalCooldown > 0) {
+                obj.portalCooldown--;
+            }
+
+            if (obj.type === OBJECT_TYPE.BLOCK) {
+                if (applyBlockCollision(obj, relX, bounds)) {
+                    onGround = true;
+                }
+            } else if (obj.type === OBJECT_TYPE.JUMP_PAD) {
+                if (applyJumpPadCollision(obj, relX, bounds)) {
+                    onGround = true;
+                }
+            } else if (obj.type === OBJECT_TYPE.PORTAL) {
+                applyPortalCollision(obj, relX, bounds);
+            } else if (obj.type === OBJECT_TYPE.SPIKE && hitsSpike(obj, relX, bounds)) {
+                loseGame();
+            } else if (obj.type === OBJECT_TYPE.GOAL && reachedGoal(obj, relX, bounds)) {
+                player.alive = false;
+                alert("Level abgeschlossen!");
+                break;
+            }
+
+            if (!player.alive) {
+                break;
+            }
+        }
+
+        if (!player.alive) {
+            return;
+        }
+
+        if (player.y + player.size >= groundY && !forceJump) {
+            player.y = groundY - player.size;
+            onGround = true;
+            player.jumping = false;
+            player.rotation = 0;
+        }
+
+        if (jumpingKey && (onGround || forceJump) && !player.jumping) {
+            player.jumping = true;
+            jumpStartY = player.y;
+            jumpProgress = 0;
+            jumpDuration = lowGravityFrames > 0 ? LOW_GRAVITY_JUMP_DURATION : NORMAL_JUMP_DURATION;
+            jumpHeight = lowGravityFrames > 0 ? LOW_GRAVITY_JUMP_HEIGHT : NORMAL_JUMP_HEIGHT;
+            forceJump = false;
+        }
+
+        if (player.jumping) {
+            jumpProgress++;
+            const t = jumpProgress / jumpDuration;
+            player.y = jumpStartY - jumpHeight * Math.sin(Math.PI * t);
+            player.rotation = t * 2 * Math.PI;
+            if (t >= 1) {
+                player.jumping = false;
+                player.rotation = 0;
+            }
+        }
+
+        if (!onGround && !player.jumping) {
+            const activeGravity = lowGravityFrames > 0 ? LOW_GRAVITY : NORMAL_GRAVITY;
+            player.y += activeGravity;
+            if (player.y + player.size > groundY) {
+                player.y = groundY - player.size;
+            }
+        }
+
+        score = Math.floor(cameraX / 10);
+        scoreDiv.textContent = "Score: " + score;
+    }
+
+    function drawMountainLayer(offsetX, baseY, amplitude, wavelength, speed, color) {
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.moveTo(-30, canvas.height);
+        for (let x = -30; x <= canvas.width + 30; x += 18) {
+            const worldX = x + offsetX * speed;
+            const y = baseY -
+                Math.sin(worldX / wavelength) * amplitude -
+                Math.cos(worldX / (wavelength * 0.75)) * amplitude * 0.35;
+            ctx.lineTo(x, y);
+        }
+        ctx.lineTo(canvas.width + 30, canvas.height);
+        ctx.closePath();
+        ctx.fill();
+    }
+
+    function drawSceneBackground(offsetX) {
+        const skyGradient = ctx.createLinearGradient(0, 0, 0, groundY + 30);
+        skyGradient.addColorStop(0, "#7ed0ff");
+        skyGradient.addColorStop(0.45, "#4ea7ff");
+        skyGradient.addColorStop(1, "#2f71cc");
+        ctx.fillStyle = skyGradient;
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        const sunGlow = ctx.createRadialGradient(900, 80, 20, 900, 80, 120);
+        sunGlow.addColorStop(0, "rgba(255, 248, 190, 0.95)");
+        sunGlow.addColorStop(1, "rgba(255, 248, 190, 0)");
+        ctx.fillStyle = sunGlow;
+        ctx.fillRect(760, 0, 280, 220);
+
+        drawMountainLayer(offsetX, 250, 18, 130, 0.16, "rgba(44, 95, 156, 0.7)");
+        drawMountainLayer(offsetX, 290, 28, 165, 0.3, "rgba(28, 63, 120, 0.9)");
+    }
+
+    function drawGroundPlane(offsetX) {
+        const groundGradient = ctx.createLinearGradient(0, groundY, 0, canvas.height);
+        groundGradient.addColorStop(0, "#215f37");
+        groundGradient.addColorStop(1, "#173325");
+        ctx.fillStyle = groundGradient;
+        ctx.fillRect(0, groundY, canvas.width, canvas.height - groundY);
+
+        ctx.fillStyle = "rgba(255, 255, 255, 0.35)";
+        ctx.fillRect(0, groundY - 2, canvas.width, 2);
+
+        const stripeSpacing = 70;
+        const shift = (offsetX * 0.9) % stripeSpacing;
+        for (let x = -stripeSpacing + shift; x < canvas.width + stripeSpacing; x += stripeSpacing) {
+            ctx.beginPath();
+            ctx.moveTo(x, groundY + 1);
+            ctx.lineTo(x + 16, canvas.height);
+            ctx.lineTo(x + 36, canvas.height);
+            ctx.lineTo(x + 10, groundY + 1);
+            ctx.closePath();
+            ctx.fillStyle = "rgba(255, 255, 255, 0.08)";
+            ctx.fill();
+        }
+    }
+
+    function drawObjectShadow(relX, objY, width) {
+        const distanceToGround = Math.max(0, groundY - objY);
+        const shadowWidth = Math.max(14, width - distanceToGround * 0.12);
+        const shadowHeight = Math.max(4, 9 - distanceToGround * 0.025);
+        const alpha = Math.max(0.08, 0.25 - distanceToGround * 0.001);
+        const shadowX = relX + width / 2;
+        const shadowY = groundY + 9;
+
+        ctx.fillStyle = `rgba(0, 0, 0, ${alpha})`;
+        ctx.beginPath();
+        ctx.ellipse(shadowX, shadowY, shadowWidth / 2, shadowHeight / 2, 0, 0, Math.PI * 2);
+        ctx.fill();
+    }
+
+    function draw3DBox(x, y, size, depth, colors) {
+        const { front, top, side, stroke } = colors;
+
+        ctx.fillStyle = top;
+        ctx.beginPath();
+        ctx.moveTo(x, y);
+        ctx.lineTo(x + depth, y - depth);
+        ctx.lineTo(x + size + depth, y - depth);
+        ctx.lineTo(x + size, y);
+        ctx.closePath();
+        ctx.fill();
+
+        ctx.fillStyle = side;
+        ctx.beginPath();
+        ctx.moveTo(x + size, y);
+        ctx.lineTo(x + size + depth, y - depth);
+        ctx.lineTo(x + size + depth, y + size - depth);
+        ctx.lineTo(x + size, y + size);
+        ctx.closePath();
+        ctx.fill();
+
+        ctx.fillStyle = front;
+        ctx.fillRect(x, y, size, size);
+
+        if (stroke) {
+            ctx.strokeStyle = stroke;
+            ctx.lineWidth = 1.2;
+            ctx.strokeRect(x + 0.5, y + 0.5, size - 1, size - 1);
+        }
+    }
+
+    function draw3DSpike(x, y, dangerStrength = 0, pulse = 0.5) {
+        const spikeHeight = 40;
+        const depth = 8;
+        const baseY = y + spikeHeight;
+        const tipX = x + spikeWidth / 2;
+        const tipY = y;
+
+        const hotColor = dangerStrength > 0
+            ? `hsl(${8 + pulse * 8}, 100%, ${54 + pulse * 9}%)`
+            : "#ff715f";
+        const darkColor = dangerStrength > 0
+            ? `hsl(${2 + pulse * 6}, 96%, ${35 + pulse * 8}%)`
+            : "#cf3c2f";
+
+        ctx.fillStyle = hotColor;
+        ctx.beginPath();
+        ctx.moveTo(x, baseY);
+        ctx.lineTo(tipX, tipY);
+        ctx.lineTo(x + spikeWidth, baseY);
+        ctx.closePath();
+        ctx.fill();
+
+        ctx.fillStyle = darkColor;
+        ctx.beginPath();
+        ctx.moveTo(tipX, tipY);
+        ctx.lineTo(tipX + depth, tipY - depth * 0.6);
+        ctx.lineTo(x + spikeWidth + depth, baseY - depth * 0.6);
+        ctx.lineTo(x + spikeWidth, baseY);
+        ctx.closePath();
+        ctx.fill();
+
+        ctx.fillStyle = dangerStrength > 0
+            ? `rgba(255, 235, 210, ${0.38 + 0.22 * pulse})`
+            : "rgba(255, 255, 255, 0.35)";
+        ctx.beginPath();
+        ctx.moveTo(tipX - 3, tipY + 7);
+        ctx.lineTo(tipX + 4, tipY + 2);
+        ctx.lineTo(tipX + 10, tipY + 10);
+        ctx.closePath();
+        ctx.fill();
+
+        if (dangerStrength > 0) {
+            ctx.strokeStyle = `rgba(255, 64, 24, ${0.35 + 0.3 * pulse * dangerStrength})`;
+            ctx.lineWidth = 2 + 2 * dangerStrength;
+            ctx.beginPath();
+            ctx.moveTo(x - 1, baseY + 1);
+            ctx.lineTo(tipX, tipY - 2);
+            ctx.lineTo(x + spikeWidth + 1, baseY + 1);
+            ctx.stroke();
+        }
+    }
+
+    function draw3DJumpPad(x, y, dangerStrength = 0, pulse = 0.5) {
+        const padHeight = 10;
+        const depth = 7;
+        const topColor = dangerStrength > 0
+            ? `hsl(${20 + pulse * 8}, 100%, ${63 + pulse * 8}%)`
+            : "#ffd166";
+        const frontColor = dangerStrength > 0
+            ? `hsl(${9 + pulse * 6}, 96%, ${52 + pulse * 10}%)`
+            : "#ff9f1c";
+        const sideColor = dangerStrength > 0
+            ? `hsl(${0 + pulse * 5}, 95%, ${36 + pulse * 7}%)`
+            : "#b86d08";
+
+        ctx.fillStyle = topColor;
+        ctx.beginPath();
+        ctx.moveTo(x, y);
+        ctx.lineTo(x + depth, y - depth * 0.6);
+        ctx.lineTo(x + gridSize + depth, y - depth * 0.6);
+        ctx.lineTo(x + gridSize, y);
+        ctx.closePath();
+        ctx.fill();
+
+        ctx.fillStyle = frontColor;
+        ctx.fillRect(x, y, gridSize, padHeight);
+
+        ctx.fillStyle = sideColor;
+        ctx.fillRect(x + gridSize - 4, y, 4, padHeight);
+
+        ctx.fillStyle = "rgba(255, 255, 255, 0.5)";
+        ctx.fillRect(x + 5, y + 2, gridSize - 10, 2);
+    }
+
+    function drawPortal(x, y) {
+        const t = performance.now() * 0.005;
+        const centerX = x + gridSize / 2;
+        const centerY = y + gridSize / 2;
+        const outerR = gridSize * 0.46;
+        const innerR = gridSize * 0.23;
+
+        const glow = ctx.createRadialGradient(centerX, centerY, innerR, centerX, centerY, outerR * 1.45);
+        glow.addColorStop(0, "rgba(150, 255, 255, 0.08)");
+        glow.addColorStop(0.5, "rgba(70, 190, 255, 0.25)");
+        glow.addColorStop(1, "rgba(70, 190, 255, 0)");
+        ctx.fillStyle = glow;
+        ctx.fillRect(x - 18, y - 18, gridSize + 36, gridSize + 36);
+
+        ctx.strokeStyle = "#8ff7ff";
+        ctx.lineWidth = 6;
+        ctx.beginPath();
+        ctx.arc(centerX, centerY, outerR, t, t + Math.PI * 1.7);
+        ctx.stroke();
+
+        ctx.strokeStyle = "#37a7ff";
+        ctx.lineWidth = 4;
+        ctx.beginPath();
+        ctx.arc(centerX, centerY, outerR - 5, -t * 1.15, -t * 1.15 + Math.PI * 1.55);
+        ctx.stroke();
+
+        const coreGradient = ctx.createRadialGradient(centerX, centerY, 1, centerX, centerY, innerR + 6);
+        coreGradient.addColorStop(0, "rgba(255, 255, 255, 0.95)");
+        coreGradient.addColorStop(0.5, "rgba(148, 215, 255, 0.95)");
+        coreGradient.addColorStop(1, "rgba(56, 132, 219, 0.1)");
+        ctx.fillStyle = coreGradient;
+        ctx.beginPath();
+        ctx.arc(centerX, centerY, innerR + 4, 0, Math.PI * 2);
+        ctx.fill();
+    }
+
+    function pathRoundedRect(x, y, width, height, radius) {
+        const r = Math.min(radius, width / 2, height / 2);
+        ctx.beginPath();
+        ctx.moveTo(x + r, y);
+        ctx.lineTo(x + width - r, y);
+        ctx.quadraticCurveTo(x + width, y, x + width, y + r);
+        ctx.lineTo(x + width, y + height - r);
+        ctx.quadraticCurveTo(x + width, y + height, x + width - r, y + height);
+        ctx.lineTo(x + r, y + height);
+        ctx.quadraticCurveTo(x, y + height, x, y + height - r);
+        ctx.lineTo(x, y + r);
+        ctx.quadraticCurveTo(x, y, x + r, y);
+        ctx.closePath();
+    }
+
+    function drawMenuButton(btn) {
+        const radius = 9;
+        const gradient = ctx.createLinearGradient(btn.x, btn.y, btn.x, btn.y + btn.h);
+        gradient.addColorStop(0, "#4f6a8d");
+        gradient.addColorStop(1, "#31445f");
+
+        ctx.fillStyle = "rgba(0, 0, 0, 0.3)";
+        pathRoundedRect(btn.x + 2, btn.y + 4, btn.w, btn.h, radius);
+        ctx.fill();
+
+        ctx.fillStyle = gradient;
+        pathRoundedRect(btn.x, btn.y, btn.w, btn.h, radius);
+        ctx.fill();
+
+        ctx.fillStyle = "rgba(255, 255, 255, 0.2)";
+        pathRoundedRect(btn.x + 3, btn.y + 3, btn.w - 6, 11, 6);
+        ctx.fill();
+
+        ctx.fillStyle = "#f5fbff";
+        ctx.font = "bold 20px Trebuchet MS";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(btn.text, btn.x + btn.w / 2, btn.y + btn.h / 2 + 1);
+        ctx.textAlign = "left";
+        ctx.textBaseline = "alphabetic";
+    }
+
+    function drawMenu() {
+        ctx.fillStyle = "rgba(7, 16, 30, 0.35)";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        ctx.fillStyle = "#ecf7ff";
+        ctx.font = "bold 46px Trebuchet MS";
+        ctx.fillText("Mini Geometry Dash", canvas.width / 2 - 220, 95);
+        ctx.fillStyle = "rgba(14, 32, 54, 0.9)";
+        ctx.font = "18px Trebuchet MS";
+        ctx.fillText("Arcade Edition", canvas.width / 2 - 55, 125);
+
+        getMenuButtons().forEach((btn) => drawMenuButton(btn));
+    }
+
+    function drawWorldObjects(objects, offsetX, warpStrength = 0) {
+        const dangerStrength = Math.min(1, warpStrength * 1.35);
+        const now = performance.now() * 0.018;
+
+        getVisibleObjects(objects, offsetX).forEach((obj) => {
+            const relX = obj.x - offsetX;
+            const drawWidth = obj.type === OBJECT_TYPE.SPIKE ? spikeWidth : gridSize;
+            const pulse = 0.5 + 0.5 * Math.sin(now + relX * 0.06);
+            drawObjectShadow(relX, obj.y, drawWidth);
+
+            if (obj.type === OBJECT_TYPE.BLOCK) {
+                const blockColors = dangerStrength > 0
+                    ? {
+                        front: `hsl(${7 + pulse * 8}, 94%, ${48 + pulse * 9}%)`,
+                        top: `hsl(${18 + pulse * 6}, 99%, ${63 + pulse * 10}%)`,
+                        side: `hsl(${2 + pulse * 5}, 92%, ${32 + pulse * 8}%)`,
+                        stroke: `rgba(255, 228, 196, ${0.34 + pulse * 0.28})`
+                    }
+                    : {
+                        front: "#37c978",
+                        top: "#70eba9",
+                        side: "#1f8d50",
+                        stroke: "rgba(0, 0, 0, 0.25)"
+                    };
+                draw3DBox(relX, obj.y, gridSize, BLOCK_DEPTH, {
+                    front: blockColors.front,
+                    top: blockColors.top,
+                    side: blockColors.side,
+                    stroke: blockColors.stroke
+                });
+                if (dangerStrength > 0) {
+                    ctx.strokeStyle = `rgba(255, 72, 36, ${(0.25 + pulse * 0.35) * dangerStrength})`;
+                    ctx.lineWidth = 1.8 + 2.6 * dangerStrength;
+                    ctx.strokeRect(relX - 2, obj.y - 2, gridSize + 4, gridSize + 4);
+                }
+            } else if (obj.type === OBJECT_TYPE.SPIKE) {
+                draw3DSpike(relX, obj.y, dangerStrength, pulse);
+            } else if (obj.type === OBJECT_TYPE.JUMP_PAD) {
+                draw3DJumpPad(relX, obj.y, dangerStrength, pulse);
+            } else if (obj.type === OBJECT_TYPE.PORTAL) {
+                drawPortal(relX, obj.y);
+            } else if (obj.type === OBJECT_TYPE.GOAL) {
+                draw3DBox(relX, obj.y, gridSize, BLOCK_DEPTH, {
+                    front: "#f8dc4f",
+                    top: "#fff194",
+                    side: "#c7a326",
+                    stroke: "rgba(82, 58, 0, 0.45)"
+                });
+            }
+        });
+    }
+
+    function drawPlayer() {
+        ctx.save();
+        ctx.translate(player.x + player.size / 2, player.y + player.size / 2);
+        ctx.rotate(player.rotation);
+
+        draw3DBox(-player.size / 2, -player.size / 2, player.size, PLAYER_DEPTH, {
+            front: "#3ea2ff",
+            top: "#89d3ff",
+            side: "#1e69b9",
+            stroke: "rgba(0, 0, 0, 0.35)"
+        });
+
+        ctx.fillStyle = "#03203d";
+        ctx.fillRect(-player.size / 4 - 3, -player.size / 4 - 3, 6, 6);
+        ctx.fillRect(player.size / 4 - 3, -player.size / 4 - 3, 6, 6);
+        ctx.fillRect(-player.size / 4, player.size / 4 - 1, player.size / 2, 2);
+
+        ctx.restore();
+    }
+
+    function getWarpStrength() {
+        const portalRatio = portalAnimationFrames > 0 ? portalAnimationFrames / PORTAL_ANIMATION_DURATION : 0;
+        const lowGravityRatio = lowGravityFrames > 0 ? Math.min(1, lowGravityFrames / LOW_GRAVITY_DURATION) : 0;
+        return Math.min(1.65, Math.max(portalRatio * 1.95, lowGravityRatio * 1.35));
+    }
+
+    function drawLowGravityIndicator(strength) {
+        if (lowGravityFrames <= 0) {
+            return;
+        }
+        const alpha = Math.min(1, 0.58 + strength * 0.4);
+        const glow = ctx.createLinearGradient(canvas.width - 300, 6, canvas.width - 30, 44);
+        glow.addColorStop(0, `rgba(255, 92, 56, ${0.25 * alpha})`);
+        glow.addColorStop(1, `rgba(255, 218, 108, ${0.2 * alpha})`);
+        ctx.fillStyle = glow;
+        pathRoundedRect(canvas.width - 305, 8, 290, 36, 9);
+        ctx.fill();
+
+        ctx.fillStyle = `rgba(255, 243, 231, ${0.88 * alpha})`;
+        ctx.font = "bold 24px Trebuchet MS";
+        ctx.fillText("LOW GRAVITY BOOST", canvas.width - 292, 35);
+    }
+
+    function drawGalaxyOverlay(strength) {
+        if (strength <= 0) {
+            return;
+        }
+
+        const now = performance.now() * 0.001;
+        const centerX = player ? player.x + player.size / 2 : canvas.width * 0.25;
+        const centerY = player ? player.y + player.size / 2 : canvas.height * 0.45;
+        const blastRatio = portalAnimationFrames > 0 ? portalAnimationFrames / PORTAL_ANIMATION_DURATION : 0;
+        const cameraDrift = cameraX * (0.25 + strength * 0.45);
+
+        const deepSpace = ctx.createLinearGradient(0, 0, 0, canvas.height);
+        deepSpace.addColorStop(0, `rgba(4, 7, 20, ${0.88 * strength})`);
+        deepSpace.addColorStop(0.35, `rgba(8, 9, 38, ${0.8 * strength})`);
+        deepSpace.addColorStop(1, `rgba(10, 4, 32, ${0.92 * strength})`);
+        ctx.fillStyle = deepSpace;
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        for (const cloud of spaceDustClouds) {
+            const cloudX = wrapValue(cloud.x - cameraDrift * cloud.drift + Math.sin(now * 0.25 + cloud.drift * 10) * 18, canvas.width + cloud.radius * 2) - cloud.radius;
+            const cloudY = cloud.y + Math.sin(now * 0.18 + cloud.drift * 8) * 16;
+            const nebula = ctx.createRadialGradient(cloudX, cloudY, cloud.radius * 0.08, cloudX, cloudY, cloud.radius);
+            nebula.addColorStop(0, `hsla(${cloud.hue}, 85%, 70%, ${cloud.alpha * strength * 1.5})`);
+            nebula.addColorStop(0.45, `hsla(${cloud.hue + 20}, 90%, 56%, ${cloud.alpha * strength})`);
+            nebula.addColorStop(1, "rgba(0, 0, 0, 0)");
+            ctx.fillStyle = nebula;
+            ctx.fillRect(cloudX - cloud.radius, cloudY - cloud.radius, cloud.radius * 2, cloud.radius * 2);
+        }
+
+        for (const star of deepSpaceStars) {
+            const x = wrapValue(star.x - cameraDrift * star.drift - now * 9 * star.drift, canvas.width);
+            const y = star.y;
+            const twinkle = 0.45 + 0.55 * (0.5 + Math.sin(now * star.twinkleSpeed + star.twinklePhase) * 0.5);
+            const alpha = (0.22 + twinkle * 0.45) * strength;
+            ctx.fillStyle = `rgba(170, 194, 255, ${alpha})`;
+            ctx.beginPath();
+            ctx.arc(x, y, star.size, 0, Math.PI * 2);
+            ctx.fill();
+        }
+
+        for (const star of spaceStars) {
+            const x = wrapValue(star.x - cameraDrift * star.drift - now * 20 * star.drift, canvas.width);
+            const y = star.y + Math.sin(now * 0.4 + star.twinklePhase) * 1.8;
+            const twinkle = 0.5 + Math.sin(now * star.twinkleSpeed + star.twinklePhase) * 0.5;
+            const alpha = (0.38 + twinkle * 0.62) * strength;
+            ctx.fillStyle = `hsla(${star.hue}, 100%, 86%, ${alpha})`;
+            ctx.beginPath();
+            ctx.arc(x, y, star.size + twinkle * 0.8, 0, Math.PI * 2);
+            ctx.fill();
+            if (twinkle > 0.84) {
+                ctx.strokeStyle = `rgba(215, 241, 255, ${0.25 * strength})`;
+                ctx.lineWidth = 0.9;
+                ctx.beginPath();
+                ctx.moveTo(x - 4, y);
+                ctx.lineTo(x + 4, y);
+                ctx.moveTo(x, y - 4);
+                ctx.lineTo(x, y + 4);
+                ctx.stroke();
+            }
+        }
+
+        for (const planet of spacePlanets) {
+            const px = wrapValue(planet.x - cameraDrift * planet.drift - now * 6 * planet.drift, canvas.width + planet.radius * 2) - planet.radius;
+            const py = planet.y + Math.sin(now * 0.3 + planet.drift * 17) * 9;
+            const body = ctx.createRadialGradient(px - planet.radius * 0.25, py - planet.radius * 0.25, planet.radius * 0.1, px, py, planet.radius);
+            body.addColorStop(0, `hsla(${planet.hue + 20}, ${planet.sat}%, ${planet.light + 16}%, ${0.7 * strength})`);
+            body.addColorStop(0.55, `hsla(${planet.hue}, ${planet.sat}%, ${planet.light}%, ${0.9 * strength})`);
+            body.addColorStop(1, `hsla(${planet.hue - 20}, ${planet.sat}%, ${planet.light - 18}%, ${0.95 * strength})`);
+            ctx.fillStyle = body;
+            ctx.beginPath();
+            ctx.arc(px, py, planet.radius, 0, Math.PI * 2);
+            ctx.fill();
+
+            if (planet.ring) {
+                ctx.save();
+                ctx.translate(px, py);
+                ctx.rotate(planet.ringTilt + Math.sin(now * 0.25 + planet.drift * 30) * 0.1);
+                ctx.scale(1.4, 0.35);
+                ctx.strokeStyle = `hsla(${planet.hue + planet.ringHueShift}, 80%, 75%, ${0.42 * strength})`;
+                ctx.lineWidth = 3.2;
+                ctx.beginPath();
+                ctx.arc(0, 0, planet.radius * 1.12, 0, Math.PI * 2);
+                ctx.stroke();
+                ctx.strokeStyle = `hsla(${planet.hue + planet.ringHueShift + 20}, 90%, 86%, ${0.22 * strength})`;
+                ctx.lineWidth = 1.4;
+                ctx.beginPath();
+                ctx.arc(0, 0, planet.radius * 1.24, 0, Math.PI * 2);
+                ctx.stroke();
+                ctx.restore();
+            }
+        }
+
+        const meteorCount = 18 + Math.floor(strength * 18);
+        for (let i = 0; i < meteorCount; i++) {
+            const seed = i * 1.73;
+            const travel = now * (220 + i * 7);
+            const mx = wrapValue(canvas.width + 70 - travel - seed * 130, canvas.width + 220) - 90;
+            const my = wrapValue((i * 57) + now * (30 + i * 0.6), canvas.height + 180) - 90;
+            const len = 40 + (i % 6) * 12 + blastRatio * 90;
+            ctx.strokeStyle = `rgba(178, 240, 255, ${(0.09 + blastRatio * 0.33) * strength})`;
+            ctx.lineWidth = 1 + (i % 3) * 0.7;
+            ctx.beginPath();
+            ctx.moveTo(mx, my);
+            ctx.lineTo(mx - len, my + len * 0.22);
+            ctx.stroke();
+        }
+
+        const outerNebula = ctx.createRadialGradient(centerX, centerY, 60, centerX, centerY, 520);
+        outerNebula.addColorStop(0, `rgba(155, 237, 255, ${0.42 * strength})`);
+        outerNebula.addColorStop(0.4, `rgba(97, 118, 255, ${0.31 * strength})`);
+        outerNebula.addColorStop(0.78, `rgba(62, 46, 145, ${0.37 * strength})`);
+        outerNebula.addColorStop(1, `rgba(6, 10, 34, ${0.94 * strength})`);
+        ctx.fillStyle = outerNebula;
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        const spiralArms = 8;
+        for (let arm = 0; arm < spiralArms; arm++) {
+            const armOffset = (Math.PI * 2 * arm) / spiralArms + now * (1.6 + strength * 1.45);
+            for (let i = 0; i < 62; i++) {
+                const radius = 14 + i * 10.5;
+                const theta = armOffset + i * (0.2 + strength * 0.11);
+                const x = centerX + Math.cos(theta) * radius * (1.2 + strength * 0.35);
+                const y = centerY + Math.sin(theta * 1.35) * radius * (0.55 + strength * 0.3);
+                const alpha = (1 - i / 64) * (0.3 + strength * 0.35);
+                const size = 1 + (i % 4) * (0.6 + strength * 0.45);
+                ctx.fillStyle = `rgba(236, 250, 255, ${alpha})`;
+                ctx.beginPath();
+                ctx.arc(x, y, size, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        }
+
+        const warpLines = 70;
+        for (let i = 0; i < warpLines; i++) {
+            const angle = now * 3.8 + i * (Math.PI * 2 / warpLines);
+            const startR = 18 + (i % 9) * 5;
+            const length = 160 + (i % 7) * 38 + blastRatio * 120;
+            const x1 = centerX + Math.cos(angle) * startR;
+            const y1 = centerY + Math.sin(angle) * startR;
+            const x2 = centerX + Math.cos(angle) * (startR + length);
+            const y2 = centerY + Math.sin(angle) * (startR + length);
+            ctx.strokeStyle = `rgba(179, 248, 255, ${(0.12 + blastRatio * 0.38) * strength})`;
+            ctx.lineWidth = 1.3 + ((i % 4) * 0.65);
+            ctx.beginPath();
+            ctx.moveTo(x1, y1);
+            ctx.lineTo(x2, y2);
+            ctx.stroke();
+        }
+
+        const blackHoleRing = ctx.createRadialGradient(centerX, centerY, 10, centerX, centerY, 140 + strength * 180);
+        blackHoleRing.addColorStop(0, `rgba(255, 255, 255, ${0.96 * strength})`);
+        blackHoleRing.addColorStop(0.18, `rgba(108, 223, 255, ${0.86 * strength})`);
+        blackHoleRing.addColorStop(0.44, `rgba(59, 79, 220, ${0.62 * strength})`);
+        blackHoleRing.addColorStop(1, "rgba(0, 0, 0, 0)");
+        ctx.fillStyle = blackHoleRing;
+        ctx.beginPath();
+        ctx.arc(centerX, centerY, 190 + strength * 140, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = `rgba(3, 4, 11, ${0.9 * strength})`;
+        ctx.beginPath();
+        ctx.arc(centerX, centerY, 28 + strength * 20, 0, Math.PI * 2);
+        ctx.fill();
+
+        const pulseAlpha = (0.1 + Math.sin(now * 17) * 0.1 + blastRatio * 0.52) * strength;
+        ctx.fillStyle = `rgba(196, 235, 255, ${Math.max(0, pulseAlpha)})`;
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        const vignette = ctx.createRadialGradient(canvas.width / 2, canvas.height / 2, 90, canvas.width / 2, canvas.height / 2, canvas.width * 0.7);
+        vignette.addColorStop(0, "rgba(0, 0, 0, 0)");
+        vignette.addColorStop(1, `rgba(3, 5, 20, ${0.84 * strength})`);
+        ctx.fillStyle = vignette;
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+    }
+
+    function drawDeathBodies(snapshot, bodies, opacity = 1, offsetX = 0) {
+        ctx.save();
+        ctx.globalAlpha = opacity;
+        for (const body of bodies) {
+            if (body.offscreen) {
+                continue;
+            }
+            const drawX = body.worldX !== undefined ? body.worldX - offsetX : body.x;
+            const drawY = body.worldY !== undefined ? body.worldY : body.y;
+            ctx.save();
+            ctx.translate(drawX, drawY);
+            ctx.rotate(body.angle);
+            ctx.drawImage(
+                snapshot,
+                body.sx, body.sy, body.sw, body.sh,
+                -body.sw / 2, -body.sh / 2, body.sw, body.sh
+            );
+            ctx.strokeStyle = "rgba(255, 255, 255, 0.08)";
+            ctx.lineWidth = 0.7;
+            ctx.strokeRect(-body.sw / 2, -body.sh / 2, body.sw, body.sh);
+            ctx.restore();
+        }
+        ctx.restore();
+    }
+
+    function drawCorpseHistory(offsetX = 0) {
+        for (const corpse of corpseHistory) {
+            drawDeathBodies(corpse.snapshot, corpse.bodies, 0.58, offsetX);
+        }
+    }
+
+    function drawDeathAnimation() {
+      
+    }
+
+    function draw() {
+        if (mode === MODE.GAME && deathState.active) {
+            drawDeathAnimation();
+            return;
+        }
+
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+        const sceneOffset = mode === MODE.GAME
+            ? cameraX
+            : mode === MODE.MAKER
+                ? makerCameraX
+                : performance.now() * 0.02;
+        const warpStrength = mode === MODE.GAME ? getWarpStrength() : 0;
+
+        const bgParallaxBoost = 95 + warpStrength * 190;
+        drawSceneBackground(sceneOffset + bgParallaxBoost);
+        drawGroundPlane(sceneOffset + 75 + warpStrength * 150);
+
+        if (mode === MODE.GAME && warpStrength > 0) {
+            drawGalaxyOverlay(warpStrength);
+        }
+
+        if (mode === MODE.MENU) {
+            drawMenu();
+        }
+
+        if (mode === MODE.GAME || mode === MODE.MAKER) {
+            const objects = mode === MODE.GAME ? level : makerLevel;
+            const offsetX = mode === MODE.GAME ? cameraX : makerCameraX;
+            drawWorldObjects(objects, offsetX, warpStrength);
+        }
+
+        if (mode === MODE.GAME) {
+            drawCorpseHistory(cameraX);
+        }
+
+        if (mode === MODE.GAME && player) {
+            drawObjectShadow(player.x, player.y + player.size, player.size);
+            drawPlayer();
+            if (!player.alive && message) {
+                ctx.fillStyle = "#f3fbff";
+                ctx.font = "bold 50px Trebuchet MS";
+                ctx.fillText(message, canvas.width / 2 - 120, canvas.height / 2);
+            }
+            drawLowGravityIndicator(warpStrength);
+        }
+    }
+
+    function loop() {
+        update();
+        draw();
+        requestAnimationFrame(loop);
+    }
+
+    function init() {
+        buildSpaceBackdropData();
+        setupToolButtons();
+        setupImportExportButtons();
+        setupCanvasInput();
+        setupKeyboardInput();
+
+        restartBtn.onclick = () => {
+            startGame(level);
+            restartBtn.style.display = "none";
+        };
+
+        levels = [generateLevel(), generateLevel(), generateLevel()];
+        loop();
+    }
+// ==========================
+// ✏️ LEVEL BEARBEITEN BUTTON
+// ==========================
+document.getElementById("editLevelBtn").onclick = ()=>{
+  const savedLevels = JSON.parse(localStorage.getItem("gdLevels") || "[]");
+
+  if(savedLevels.length === 0){
+    alert("Keine Levels gespeichert!");
+    return;
+  }
+
+  // Level auswählen
+  let list = "Welches Level bearbeiten?\n";
+  savedLevels.forEach((lvl,i)=>{
+    list += i + ": " + (lvl.name || "Level") + "\n";
+  });
+
+  const index = prompt(list);
+
+  if(index === null) return;
+
+  const lvl = savedLevels[index];
+
+  if(!lvl){
+    alert("Ungültige Auswahl!");
+    return;
+  }
+
+  // 👉 IN EDITOR LADEN
+  makerLevel = JSON.parse(JSON.stringify(lvl.data));
+  mode = "maker";
+  toolsDiv.style.display = "block";
+  levelListDiv.style.display = "none";
+  makerCameraX = 0;
+
+  alert("Level wird bearbeitet!");
+  window.onload = () => {
+
+  document.getElementById("deleteLevelBtn").onclick = ()=>{
+    const savedLevels = JSON.parse(localStorage.getItem("gdLevels") || "[]");
+
+    if(savedLevels.length === 0){
+      alert("Keine Levels gespeichert!");
+      return;
+    }
+
+    let list = "Welches Level löschen?\n";
+    savedLevels.forEach((lvl,i)=>{
+      list += i + ": " + (lvl.name || "Level") + "\n";
+    });
+
+    const index = prompt(list);
+    if(index === null) return;
+
+    if(!savedLevels[index]){
+      alert("Ungültig!");
+      return;
+    }
+
+    if(!confirm("Wirklich löschen?")) return;
+
+    savedLevels.splice(index,1);
+    localStorage.setItem("gdLevels", JSON.stringify(savedLevels));
+
+    alert("Gelöscht!");
+  };
+
+};
+};
+    init();
+</script>
+</body>
+</html>
+ 
