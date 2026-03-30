@@ -113,6 +113,13 @@
         OLD_LEVEL: "gdLevelMaker",
         LEVELS: "gdLevels"
     };
+    const COOKIE_KEYS = {
+        PLAY_SOURCE: "gdPlaySource"
+    };
+    const PLAY_SOURCE_TYPE = {
+        RANDOM: "random",
+        SAVED: "saved"
+    };
 
     const gridSize = 60;
     const spikeWidth = gridSize * 0.66;
@@ -121,6 +128,9 @@
     const makerWidth = 50000;
     const BLOCK_DEPTH = 12;
     const PLAYER_DEPTH = 10;
+    const TARGET_FPS = 60;
+    const FRAME_TIME_MS = 1000 / TARGET_FPS;
+    const MAX_DELTA_FRAMES = 3;
     const NORMAL_GRAVITY = 8;
     const LOW_GRAVITY = 0.6;
     const LOW_GRAVITY_DURATION = 760;
@@ -150,6 +160,7 @@
     let makerLevel = [];
     let makerCameraX = 0;
     let currentTool = OBJECT_TYPE.BLOCK;
+    let playSource = { type: PLAY_SOURCE_TYPE.RANDOM, levelName: "" };
 
     let jumpStartY = 0;
     let jumpProgress = 0;
@@ -174,6 +185,7 @@
     };
     let lastDeathWorldPoint = { x: 0, y: groundY - PLAYER_SIZE / 2 };
     let corpseHistory = [];
+    let lastFrameTime = null;
 
     function safeParseJSON(rawValue, fallback) {
         try {
@@ -181,6 +193,55 @@
         } catch (_error) {
             return fallback;
         }
+    }
+
+    function setCookie(name, value, days = 365) {
+        const expires = new Date(Date.now() + days * 24 * 60 * 60 * 1000).toUTCString();
+        document.cookie = `${name}=${encodeURIComponent(value)}; expires=${expires}; path=/; SameSite=Lax`;
+    }
+
+    function getCookie(name) {
+        const prefix = name + "=";
+        const parts = document.cookie.split(";");
+        for (const part of parts) {
+            const trimmed = part.trim();
+            if (trimmed.startsWith(prefix)) {
+                return decodeURIComponent(trimmed.slice(prefix.length));
+            }
+        }
+        return "";
+    }
+
+    function parsePlaySource(rawValue) {
+        if (!rawValue || rawValue === PLAY_SOURCE_TYPE.RANDOM) {
+            return { type: PLAY_SOURCE_TYPE.RANDOM, levelName: "" };
+        }
+
+        if (rawValue.startsWith(PLAY_SOURCE_TYPE.SAVED + ":")) {
+            const levelName = rawValue.slice((PLAY_SOURCE_TYPE.SAVED + ":").length);
+            if (levelName) {
+                return { type: PLAY_SOURCE_TYPE.SAVED, levelName: levelName };
+            }
+        }
+
+        return { type: PLAY_SOURCE_TYPE.RANDOM, levelName: "" };
+    }
+
+    function serializePlaySource(source) {
+        if (source.type === PLAY_SOURCE_TYPE.SAVED && source.levelName) {
+            return PLAY_SOURCE_TYPE.SAVED + ":" + source.levelName;
+        }
+        return PLAY_SOURCE_TYPE.RANDOM;
+    }
+
+    function applyPlaySource(source) {
+        playSource = source;
+        setCookie(COOKIE_KEYS.PLAY_SOURCE, serializePlaySource(source));
+    }
+
+    function loadPlaySourceFromCookie() {
+        const raw = getCookie(COOKIE_KEYS.PLAY_SOURCE);
+        playSource = parsePlaySource(raw);
     }
 
     function deepClone(value) {
@@ -478,20 +539,22 @@
         bodyB.angularVelocity += spinTransfer * (Math.random() < 0.5 ? -1 : 1);
     }
 
-    function updateDeathBodies(bodies, mode = "void") {
+    function updateDeathBodies(bodies, mode = "void", deltaFrames = 1) {
+        const airDrag = Math.pow(DEATH_AIR_DRAG, deltaFrames);
+        const spinDrag = Math.pow(DEATH_SPIN_DRAG, deltaFrames);
         for (const body of bodies) {
             if (body.offscreen) {
                 continue;
             }
 
-            body.vy += DEATH_GRAVITY;
-            body.x += body.vx;
-            body.y += body.vy;
-            body.angle += body.angularVelocity;
+            body.vy += DEATH_GRAVITY * deltaFrames;
+            body.x += body.vx * deltaFrames;
+            body.y += body.vy * deltaFrames;
+            body.angle += body.angularVelocity * deltaFrames;
 
-            body.vx *= DEATH_AIR_DRAG;
-            body.vy *= DEATH_AIR_DRAG;
-            body.angularVelocity *= DEATH_SPIN_DRAG;
+            body.vx *= airDrag;
+            body.vy *= airDrag;
+            body.angularVelocity *= spinDrag;
 
             const wallPadding = 10;
             if (body.x - body.radius < -wallPadding) {
@@ -548,13 +611,13 @@
         }
     }
 
-    function updateDeathAnimation() {
+    function updateDeathAnimation(deltaFrames = 1) {
         if (!deathState.active) {
             return;
         }
 
         if (deathState.phase === "rotate") {
-            deathState.frame++;
+            deathState.frame += deltaFrames;
             const t = Math.min(1, deathState.frame / DEATH_ROTATION_FRAMES);
             const eased = 1 - (1 - t) * (1 - t);
             deathState.rotation = eased * (Math.PI / 2);
@@ -565,8 +628,8 @@
         }
 
         if (deathState.phase === "fall") {
-            deathState.elapsed++;
-            updateDeathBodies(deathState.bodies, "void");
+            deathState.elapsed += deltaFrames;
+            updateDeathBodies(deathState.bodies, "void", deltaFrames);
         }
     }
 
@@ -629,6 +692,36 @@
         return savedLevels.concat(getStoredNamedLevels());
     }
 
+    function findSavedLevelByName(levelName) {
+        if (!levelName) {
+            return null;
+        }
+        const savedLevels = loadAllStoredLevels();
+        return savedLevels.find((lvl) => (lvl.name || "Level") === levelName) || null;
+    }
+
+    function getActivePlaySourceLabel() {
+        if (playSource.type === PLAY_SOURCE_TYPE.SAVED) {
+            const resolved = findSavedLevelByName(playSource.levelName);
+            if (resolved) {
+                return resolved.name || "Level";
+            }
+            return "Gespeichertes Level fehlt (Fallback: Zufall)";
+        }
+        return "Zufallsgeneriert";
+    }
+
+    function resolvePlayLevel() {
+        if (playSource.type === PLAY_SOURCE_TYPE.SAVED) {
+            const savedLevel = findSavedLevelByName(playSource.levelName);
+            if (savedLevel && Array.isArray(savedLevel.data)) {
+                return savedLevel.data;
+            }
+            applyPlaySource({ type: PLAY_SOURCE_TYPE.RANDOM, levelName: "" });
+        }
+        return generateLevel();
+    }
+
     function getMenuButtons() {
         const cx = canvas.width / 2;
         return [
@@ -638,6 +731,54 @@
             { text: "Map Maker", x: cx - 100, y: 340, w: 200, h: 60, action: "maker" },
             { text: "My Levels", x: canvas.width - 700, y: canvas.height - 370, w: 200, h: 60, action: "playmaker" }
         ];
+    }
+
+    function getPlaySettingsButtonRect() {
+        const playBtn = getMenuButtons().find((btn) => btn.action === "play");
+        return {
+            x: playBtn.x + playBtn.w + 16,
+            y: playBtn.y + 8,
+            w: 44,
+            h: 44
+        };
+    }
+
+    function showPlaySourceSelector() {
+        const savedLevels = loadAllStoredLevels();
+        levelListDiv.innerHTML = "<h3>Play-Level Auswahl</h3>";
+
+        const randomOption = document.createElement("div");
+        randomOption.textContent = "Zufallsgeneriert";
+        if (playSource.type === PLAY_SOURCE_TYPE.RANDOM) {
+            randomOption.style.fontWeight = "bold";
+        }
+        randomOption.onclick = () => {
+            applyPlaySource({ type: PLAY_SOURCE_TYPE.RANDOM, levelName: "" });
+            levelListDiv.style.display = "none";
+        };
+        levelListDiv.appendChild(randomOption);
+
+        if (savedLevels.length === 0) {
+            const empty = document.createElement("p");
+            empty.textContent = "Keine gespeicherten Levels vorhanden.";
+            levelListDiv.appendChild(empty);
+        } else {
+            savedLevels.forEach((lvl, index) => {
+                const levelName = lvl.name || "Level " + (index + 1);
+                const div = document.createElement("div");
+                div.textContent = levelName;
+                if (playSource.type === PLAY_SOURCE_TYPE.SAVED && playSource.levelName === levelName) {
+                    div.style.fontWeight = "bold";
+                }
+                div.onclick = () => {
+                    applyPlaySource({ type: PLAY_SOURCE_TYPE.SAVED, levelName: levelName });
+                    levelListDiv.style.display = "none";
+                };
+                levelListDiv.appendChild(div);
+            });
+        }
+
+        levelListDiv.style.display = "block";
     }
 
     function objectInView(obj, offsetX) {
@@ -804,7 +945,7 @@
             return;
         }
         if (action === "play") {
-            startGame(levels[currentLevelIndex]);
+            startGame(resolvePlayLevel());
             return;
         }
         if (action === "maker") {
@@ -887,6 +1028,18 @@
             const my = event.clientY - rect.top;
 
             if (mode === MODE.MENU) {
+                const playSettingsButton = getPlaySettingsButtonRect();
+                const onPlaySettings = (
+                    mx > playSettingsButton.x &&
+                    mx < playSettingsButton.x + playSettingsButton.w &&
+                    my > playSettingsButton.y &&
+                    my < playSettingsButton.y + playSettingsButton.h
+                );
+                if (onPlaySettings) {
+                    showPlaySourceSelector();
+                    return;
+                }
+
                 getMenuButtons().forEach((btn) => {
                     const insideX = mx > btn.x && mx < btn.x + btn.w;
                     const insideY = my > btn.y && my < btn.y + btn.h;
@@ -1051,7 +1204,7 @@
         return bounds.right > relX && bounds.left < relX + gridSize;
     }
 
-    function update() {
+    function update(deltaFrames = 1) {
         if (mode !== MODE.GAME) {
             return;
         }
@@ -1059,7 +1212,7 @@
         updateCorpseHistory();
 
         if (deathState.active) {
-            updateDeathAnimation();
+            updateDeathAnimation(deltaFrames);
             return;
         }
 
@@ -1068,13 +1221,13 @@
         }
 
         if (lowGravityFrames > 0) {
-            lowGravityFrames--;
+            lowGravityFrames = Math.max(0, lowGravityFrames - deltaFrames);
         }
         if (portalAnimationFrames > 0) {
-            portalAnimationFrames--;
+            portalAnimationFrames = Math.max(0, portalAnimationFrames - deltaFrames);
         }
 
-        cameraX += scrollSpeed;
+        cameraX += scrollSpeed * deltaFrames;
         let onGround = false;
         const visibleObjects = getVisibleObjects(level, cameraX);
 
@@ -1082,7 +1235,7 @@
             const relX = obj.x - cameraX;
             const bounds = getPlayerBounds();
             if (obj.type === OBJECT_TYPE.PORTAL && obj.portalCooldown > 0) {
-                obj.portalCooldown--;
+                obj.portalCooldown = Math.max(0, obj.portalCooldown - deltaFrames);
             }
 
             if (obj.type === OBJECT_TYPE.BLOCK) {
@@ -1129,7 +1282,7 @@
         }
 
         if (player.jumping) {
-            jumpProgress++;
+            jumpProgress += deltaFrames;
             const t = jumpProgress / jumpDuration;
             player.y = jumpStartY - jumpHeight * Math.sin(Math.PI * t);
             player.rotation = t * 2 * Math.PI;
@@ -1141,7 +1294,7 @@
 
         if (!onGround && !player.jumping) {
             const activeGravity = lowGravityFrames > 0 ? LOW_GRAVITY : NORMAL_GRAVITY;
-            player.y += activeGravity;
+            player.y += activeGravity * deltaFrames;
             if (player.y + player.size > groundY) {
                 player.y = groundY - player.size;
             }
@@ -1416,6 +1569,44 @@
         ctx.textBaseline = "alphabetic";
     }
 
+    function drawPlaySettingsButton() {
+        const btn = getPlaySettingsButtonRect();
+        const centerX = btn.x + btn.w / 2;
+        const centerY = btn.y + btn.h / 2;
+
+        const shellGradient = ctx.createLinearGradient(btn.x, btn.y, btn.x, btn.y + btn.h);
+        shellGradient.addColorStop(0, "#5d6f8c");
+        shellGradient.addColorStop(1, "#354761");
+        ctx.fillStyle = shellGradient;
+        pathRoundedRect(btn.x, btn.y, btn.w, btn.h, 10);
+        ctx.fill();
+
+        ctx.strokeStyle = "rgba(255, 255, 255, 0.28)";
+        ctx.lineWidth = 1.1;
+        pathRoundedRect(btn.x + 1, btn.y + 1, btn.w - 2, btn.h - 2, 9);
+        ctx.stroke();
+
+        ctx.strokeStyle = "#f3fbff";
+        ctx.lineWidth = 2.3;
+        for (let i = 0; i < 8; i++) {
+            const angle = (Math.PI * 2 * i) / 8;
+            ctx.beginPath();
+            ctx.moveTo(centerX + Math.cos(angle) * 7, centerY + Math.sin(angle) * 7);
+            ctx.lineTo(centerX + Math.cos(angle) * 12, centerY + Math.sin(angle) * 12);
+            ctx.stroke();
+        }
+
+        ctx.fillStyle = "#f3fbff";
+        ctx.beginPath();
+        ctx.arc(centerX, centerY, 8, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = "#2f4662";
+        ctx.beginPath();
+        ctx.arc(centerX, centerY, 3.2, 0, Math.PI * 2);
+        ctx.fill();
+    }
+
     function drawMenu() {
         ctx.fillStyle = "rgba(7, 16, 30, 0.35)";
         ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -1427,7 +1618,16 @@
         ctx.font = "18px Trebuchet MS";
         ctx.fillText("Arcade Edition", canvas.width / 2 - 55, 125);
 
-        getMenuButtons().forEach((btn) => drawMenuButton(btn));
+        const menuButtons = getMenuButtons();
+        menuButtons.forEach((btn) => drawMenuButton(btn));
+        drawPlaySettingsButton();
+
+        const playButton = menuButtons.find((btn) => btn.action === "play");
+        ctx.fillStyle = "rgba(241, 249, 255, 0.92)";
+        ctx.font = "16px Trebuchet MS";
+        ctx.textAlign = "left";
+        ctx.fillText("Play-Level: " + getActivePlaySourceLabel(), playButton.x, playButton.y - 14);
+        ctx.textAlign = "left";
     }
 
     function drawWorldObjects(objects, offsetX, warpStrength = 0) {
@@ -1784,13 +1984,22 @@
         }
     }
 
-    function loop() {
-        update();
+    function loop(timestamp) {
+        if (lastFrameTime === null) {
+            lastFrameTime = timestamp;
+        }
+        const elapsedMs = timestamp - lastFrameTime;
+        lastFrameTime = timestamp;
+        const rawDeltaFrames = elapsedMs / FRAME_TIME_MS;
+        const deltaFrames = Math.max(0.001, Math.min(MAX_DELTA_FRAMES, rawDeltaFrames || 1));
+
+        update(deltaFrames);
         draw();
         requestAnimationFrame(loop);
     }
 
     function init() {
+        loadPlaySourceFromCookie();
         buildSpaceBackdropData();
         setupToolButtons();
         setupImportExportButtons();
