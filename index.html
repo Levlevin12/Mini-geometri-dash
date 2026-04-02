@@ -37,6 +37,24 @@
             text-shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
             z-index: 10;
         }
+        #installBtn {
+            position: absolute;
+            top: 12px;
+            right: 14px;
+            z-index: 20;
+            margin: 0;
+            padding: 8px 14px;
+            font-size: 15px;
+            font-weight: bold;
+            color: #f5fbff;
+            background: linear-gradient(180deg, rgba(52, 122, 211, 0.95), rgba(25, 72, 140, 0.95));
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            border-radius: 8px;
+            box-shadow: 0 8px 18px rgba(0, 0, 0, 0.3);
+        }
+        #installBtn:active {
+            transform: translateY(1px);
+        }
         #tools, #levelList, #restartBtn { position: absolute; z-index: 10; display: none; }
         #tools { top: 50px; left: 10px; }
         #levelList {
@@ -112,11 +130,18 @@
             #score {
                 font-size: 18px;
             }
+            #installBtn {
+                top: 10px;
+                right: 10px;
+                font-size: 14px;
+                padding: 8px 12px;
+            }
         }
     </style>
 </head>
 <body>
 <div id="score">Score: 0</div>
+<button id="installBtn" type="button">Download App</button>
 <div id="tools">
     <button id="toolBlock">Block</button>
     <button id="toolJumpPad">Jump Pad</button>
@@ -145,6 +170,7 @@
     const canvas = document.getElementById("canvas");
     const ctx = canvas.getContext("2d");
     const scoreDiv = document.getElementById("score");
+    const installBtn = document.getElementById("installBtn");
     const toolsDiv = document.getElementById("tools");
     const levelListDiv = document.getElementById("levelList");
     const restartBtn = document.getElementById("restartBtn");
@@ -259,6 +285,8 @@ function setLevel(slot, name){
     let mobileModeCache = "";
     let makerPanLeftTimer = null;
     let makerPanRightTimer = null;
+    let deferredInstallPrompt = null;
+    let canInstallPwa = false;
 
     function safeParseJSON(rawValue, fallback) {
         try {
@@ -844,6 +872,70 @@ function setLevel(slot, name){
                 }
             }
         );
+    }
+
+    function isStandaloneApp() {
+        return window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone === true;
+    }
+
+    function isIosDevice() {
+        return /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+            (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+    }
+
+    function updateInstallButtonVisibility() {
+        if (!installBtn) {
+            return;
+        }
+
+        if (isStandaloneApp()) {
+            installBtn.style.display = "none";
+            return;
+        }
+
+        installBtn.style.display = "inline-block";
+    }
+
+    function setupInstallButton() {
+        if (!installBtn) {
+            return;
+        }
+
+        updateInstallButtonVisibility();
+
+        window.addEventListener("beforeinstallprompt", (event) => {
+            event.preventDefault();
+            deferredInstallPrompt = event;
+            canInstallPwa = true;
+            updateInstallButtonVisibility();
+        });
+
+        window.addEventListener("appinstalled", () => {
+            deferredInstallPrompt = null;
+            canInstallPwa = false;
+            updateInstallButtonVisibility();
+        });
+
+        installBtn.addEventListener("click", async () => {
+            if (deferredInstallPrompt && canInstallPwa) {
+                deferredInstallPrompt.prompt();
+                try {
+                    await deferredInstallPrompt.userChoice;
+                } catch (_error) {
+                }
+                deferredInstallPrompt = null;
+                canInstallPwa = false;
+                updateInstallButtonVisibility();
+                return;
+            }
+
+            if (isIosDevice() && !isStandaloneApp()) {
+                alert("Auf iPhone/iPad: Teilen -> Zum Home-Bildschirm.");
+                return;
+            }
+
+            alert("Installation aktuell nicht direkt verfuegbar. Bitte in Chrome oder Edge ueber HTTPS/localhost oeffnen.");
+        });
     }
 
     function getStoredNamedLevels() {
@@ -2051,6 +2143,7 @@ function setLevel(slot, name){
         setupCanvasInput();
         setupKeyboardInput();
         setupMobileControls();
+        setupInstallButton();
 
         restartBtn.onclick = () => {
             startGame(level);
