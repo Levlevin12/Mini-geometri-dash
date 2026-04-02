@@ -9,6 +9,7 @@
             overflow: hidden;
             background: radial-gradient(circle at 20% 10%, #3f5f9f, #172440 70%);
             font-family: "Trebuchet MS", Arial, sans-serif;
+            touch-action: manipulation;
         }
         canvas {
             display: block;
@@ -16,6 +17,7 @@
             background: transparent;
             border-radius: 16px;
             box-shadow: 0 24px 45px rgba(0, 0, 0, 0.45), inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+            touch-action: none;
         }
         #score {
             position: absolute;
@@ -63,6 +65,46 @@
             border-radius: 6px;
             box-shadow: 0 3px 8px rgba(0, 0, 0, 0.25);
         }
+        #mobileControls {
+            position: absolute;
+            left: 50%;
+            bottom: 14px;
+            transform: translateX(-50%);
+            display: none;
+            gap: 12px;
+            z-index: 20;
+            pointer-events: none;
+        }
+        #mobileControls button {
+            pointer-events: auto;
+            margin: 0;
+            min-width: 72px;
+            min-height: 72px;
+            font-size: 24px;
+            font-weight: bold;
+            color: #ecf8ff;
+            background: linear-gradient(180deg, rgba(60, 118, 193, 0.95), rgba(23, 57, 101, 0.95));
+            border: 1px solid rgba(255, 255, 255, 0.22);
+            border-radius: 999px;
+            box-shadow: 0 8px 18px rgba(0, 0, 0, 0.35);
+            user-select: none;
+            -webkit-user-select: none;
+            touch-action: none;
+        }
+        #mobileControls button:active {
+            transform: translateY(1px) scale(0.98);
+        }
+        #mobileControls #jumpBtn {
+            min-width: 92px;
+            min-height: 92px;
+            font-size: 30px;
+            background: linear-gradient(180deg, rgba(255, 143, 83, 0.98), rgba(209, 83, 43, 0.95));
+        }
+        @media (pointer: coarse) {
+            #score {
+                font-size: 18px;
+            }
+        }
     </style>
 </head>
 <body>
@@ -85,6 +127,11 @@
 <div id="levelList"></div>
 <button id="restartBtn">Restart</button>
 <canvas id="canvas" width="1200" height="800"></canvas>
+<div id="mobileControls">
+    <button id="makerLeftBtn" aria-label="Nach links">◀</button>
+    <button id="jumpBtn" aria-label="Springen">⤒</button>
+    <button id="makerRightBtn" aria-label="Nach rechts">▶</button>
+</div>
 
 <script>
     const canvas = document.getElementById("canvas");
@@ -94,6 +141,10 @@
     const levelListDiv = document.getElementById("levelList");
     const restartBtn = document.getElementById("restartBtn");
     const importFileInput = document.getElementById("importFile");
+    const mobileControlsDiv = document.getElementById("mobileControls");
+    const makerLeftBtn = document.getElementById("makerLeftBtn");
+    const jumpBtn = document.getElementById("jumpBtn");
+    const makerRightBtn = document.getElementById("makerRightBtn");
 
     const MODE = {
         MENU: "menu",
@@ -196,6 +247,10 @@ function setLevel(slot, name){
     };
     let lastDeathWorldPoint = { x: 0, y: groundY - PLAYER_SIZE / 2 };
     let corpseHistory = [];
+    const isTouchDevice = ("ontouchstart" in window) || (window.matchMedia && window.matchMedia("(pointer: coarse)").matches);
+    let mobileModeCache = "";
+    let makerPanLeftTimer = null;
+    let makerPanRightTimer = null;
 
     function safeParseJSON(rawValue, fallback) {
         try {
@@ -626,6 +681,163 @@ function setLevel(slot, name){
         restartBtn.style.display = "none";
     }
 
+    function clampMakerCameraX() {
+        const maxCameraX = Math.max(0, makerWidth - canvas.width);
+        if (makerCameraX < 0) {
+            makerCameraX = 0;
+        } else if (makerCameraX > maxCameraX) {
+            makerCameraX = maxCameraX;
+        }
+    }
+
+    function moveMakerCamera(deltaX) {
+        makerCameraX += deltaX;
+        clampMakerCameraX();
+    }
+
+    function stopMakerPanTimers() {
+        if (makerPanLeftTimer !== null) {
+            clearInterval(makerPanLeftTimer);
+            makerPanLeftTimer = null;
+        }
+        if (makerPanRightTimer !== null) {
+            clearInterval(makerPanRightTimer);
+            makerPanRightTimer = null;
+        }
+    }
+
+    function startMakerPan(direction) {
+        if (mode !== MODE.MAKER) {
+            return;
+        }
+        const step = direction < 0 ? -gridSize : gridSize;
+        const timerName = direction < 0 ? "makerPanLeftTimer" : "makerPanRightTimer";
+
+        if (direction < 0 && makerPanLeftTimer !== null) {
+            return;
+        }
+        if (direction > 0 && makerPanRightTimer !== null) {
+            return;
+        }
+
+        moveMakerCamera(step);
+        const timerId = setInterval(() => {
+            if (mode !== MODE.MAKER) {
+                stopMakerPanTimers();
+                return;
+            }
+            moveMakerCamera(step);
+        }, 120);
+        if (timerName === "makerPanLeftTimer") {
+            makerPanLeftTimer = timerId;
+        } else {
+            makerPanRightTimer = timerId;
+        }
+    }
+
+    function updateMobileControls(force = false) {
+        if (!mobileControlsDiv || !isTouchDevice) {
+            if (mobileControlsDiv) {
+                mobileControlsDiv.style.display = "none";
+            }
+            return;
+        }
+        if (!force && mobileModeCache === mode) {
+            return;
+        }
+        mobileModeCache = mode;
+
+        if (mode === MODE.GAME) {
+            mobileControlsDiv.style.display = "flex";
+            jumpBtn.style.display = "inline-block";
+            makerLeftBtn.style.display = "none";
+            makerRightBtn.style.display = "none";
+            stopMakerPanTimers();
+            return;
+        }
+
+        if (mode === MODE.MAKER) {
+            mobileControlsDiv.style.display = "flex";
+            jumpBtn.style.display = "none";
+            makerLeftBtn.style.display = "inline-block";
+            makerRightBtn.style.display = "inline-block";
+            return;
+        }
+
+        mobileControlsDiv.style.display = "none";
+        jumpingKey = false;
+        stopMakerPanTimers();
+    }
+
+    function setupMobileControls() {
+        if (!mobileControlsDiv) {
+            return;
+        }
+
+        const bindPressRelease = (button, onPress, onRelease) => {
+            if (!button) {
+                return;
+            }
+
+            const press = (event) => {
+                event.preventDefault();
+                onPress();
+            };
+            const release = (event) => {
+                event.preventDefault();
+                onRelease();
+            };
+
+            if (window.PointerEvent) {
+                button.addEventListener("pointerdown", press);
+                button.addEventListener("pointerup", release);
+                button.addEventListener("pointercancel", release);
+                button.addEventListener("pointerleave", release);
+            } else {
+                button.addEventListener("touchstart", press, { passive: false });
+                button.addEventListener("touchend", release, { passive: false });
+                button.addEventListener("touchcancel", release, { passive: false });
+                button.addEventListener("mousedown", press);
+                button.addEventListener("mouseup", release);
+                button.addEventListener("mouseleave", release);
+            }
+        };
+
+        bindPressRelease(
+            jumpBtn,
+            () => {
+                if (mode === MODE.GAME) {
+                    jumpingKey = true;
+                }
+            },
+            () => {
+                jumpingKey = false;
+            }
+        );
+
+        bindPressRelease(
+            makerLeftBtn,
+            () => startMakerPan(-1),
+            () => {
+                if (makerPanLeftTimer !== null) {
+                    clearInterval(makerPanLeftTimer);
+                    makerPanLeftTimer = null;
+                }
+            }
+        );
+
+        bindPressRelease(
+            makerRightBtn,
+            () => startMakerPan(1),
+            () => {
+                if (makerPanRightTimer !== null) {
+                    clearInterval(makerPanRightTimer);
+                    makerPanRightTimer = null;
+                }
+            }
+        );
+    }
+
     function getStoredNamedLevels() {
         const stored = localStorage.getItem(STORAGE_KEYS.LEVELS);
         if (!stored) {
@@ -814,6 +1026,7 @@ function setLevel(slot, name){
         level = deepClone(lvl);
         mode = MODE.GAME;
         hideOverlays();
+        updateMobileControls(true);
     }
 
     function handleMenu(action) {
@@ -832,9 +1045,11 @@ function setLevel(slot, name){
         if (action === "maker") {
             mode = MODE.MAKER;
             makerCameraX = 0;
+            clampMakerCameraX();
             toolsDiv.style.display = "block";
             levelListDiv.style.display = "none";
             restartBtn.style.display = "none";
+            updateMobileControls(true);
             return;
         }
         if (action === "playmaker") {
@@ -903,10 +1118,10 @@ function setLevel(slot, name){
     }
 
     function setupCanvasInput() {
-        canvas.addEventListener("click", (event) => {
+        const handleCanvasPress = (clientX, clientY) => {
             const rect = canvas.getBoundingClientRect();
-            const mx = event.clientX - rect.left;
-            const my = event.clientY - rect.top;
+            const mx = clientX - rect.left;
+            const my = clientY - rect.top;
 
             if (mode === MODE.MENU) {
                 getMenuButtons().forEach((btn) => {
@@ -927,7 +1142,20 @@ function setLevel(slot, name){
                     placeMakerObject(x, y, currentTool);
                 }
             }
+        };
+
+        canvas.addEventListener("click", (event) => {
+            handleCanvasPress(event.clientX, event.clientY);
         });
+
+        canvas.addEventListener("touchstart", (event) => {
+            if (!isTouchDevice || event.touches.length === 0) {
+                return;
+            }
+            const touch = event.touches[0];
+            handleCanvasPress(touch.clientX, touch.clientY);
+            event.preventDefault();
+        }, { passive: false });
     }
 
     function setupKeyboardInput() {
@@ -936,6 +1164,7 @@ function setLevel(slot, name){
                 mode = MODE.MENU;
                 resetDeathAnimation();
                 hideOverlays();
+                updateMobileControls(true);
                 return;
             }
 
@@ -947,17 +1176,10 @@ function setLevel(slot, name){
 
             if (mode === MODE.MAKER) {
                 if (event.code === "ArrowLeft") {
-                    makerCameraX -= gridSize;
-                    if (makerCameraX < 0) {
-                        makerCameraX = 0;
-                    }
+                    moveMakerCamera(-gridSize);
                 }
                 if (event.code === "ArrowRight") {
-                    makerCameraX += gridSize;
-                    const maxCameraX = makerWidth - canvas.width;
-                    if (makerCameraX > maxCameraX) {
-                        makerCameraX = maxCameraX;
-                    }
+                    moveMakerCamera(gridSize);
                 }
             }
         });
@@ -1758,6 +1980,8 @@ function setLevel(slot, name){
     }
 
     function draw() {
+        updateMobileControls();
+
         if (mode === MODE.GAME && deathState.active) {
             drawDeathAnimation();
             return;
@@ -1818,6 +2042,7 @@ function setLevel(slot, name){
         setupImportExportButtons();
         setupCanvasInput();
         setupKeyboardInput();
+        setupMobileControls();
 
         restartBtn.onclick = () => {
             startGame(level);
@@ -1825,6 +2050,7 @@ function setLevel(slot, name){
         };
 
         levels = [generateLevel(), generateLevel(), generateLevel()];
+        updateMobileControls(true);
         loop();
     }
 // ==========================
@@ -1857,10 +2083,12 @@ document.getElementById("editLevelBtn").onclick = ()=>{
 
   // 👉 IN EDITOR LADEN
   makerLevel = JSON.parse(JSON.stringify(lvl.data));
-  mode = "maker";
+  mode = MODE.MAKER;
   toolsDiv.style.display = "block";
   levelListDiv.style.display = "none";
   makerCameraX = 0;
+  clampMakerCameraX();
+  updateMobileControls(true);
 
   alert("Level wird bearbeitet!");
   window.onload = () => {
